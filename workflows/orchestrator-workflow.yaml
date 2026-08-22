@@ -121,9 +121,16 @@ main:
           champion_model: ${champion_resp.body.models[0].name}
         result: batch_predict_job
 
+    # completionStats omits successfulCount entirely when it's zero (same omit-if-empty
+    # behavior as the rest of these APIs) — a job can report JOB_STATE_SUCCEEDED while every
+    # row failed to score (e.g. a serving-container bug), leaving no output table behind.
+    # Catching that here surfaces the real per-row error instead of crashing downstream in
+    # run_sync_predictions with an opaque "table not found" BigQuery error.
     - check_batch_predict:
         switch:
           - condition: ${batch_predict_job.state == "JOB_STATE_FAILED" or batch_predict_job.state == "JOB_STATE_CANCELLED"}
+            next: alert_batch_predict_failure
+          - condition: ${not("successfulCount" in default(map.get(batch_predict_job, "completionStats"), {}))}
             next: alert_batch_predict_failure
         next: run_sync_predictions
 
