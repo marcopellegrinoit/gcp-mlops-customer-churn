@@ -4,7 +4,7 @@ triggers:
     filename: ".cloudbuild/data-gen.cloudbuild.yaml"
     branch: "^main$"
     included_files:
-      - "projects/obs-common/**"
+      - "projects/obs_common/**"
       - "projects/data_generator/**"
       - "pyproject.toml"
       - "uv.lock"
@@ -28,8 +28,8 @@ triggers:
     filename: ".cloudbuild/trainer.cloudbuild.yaml"
     branch: "^main$"
     included_files:
-      - "projects/obs-common/**"
-      - "projects/ml-common/**"
+      - "projects/obs_common/**"
+      - "projects/ml_common/**"
       - "projects/modeling/**"
       - "projects/trainer/**"
       - "pyproject.toml"
@@ -40,7 +40,7 @@ triggers:
     filename: ".cloudbuild/serving.cloudbuild.yaml"
     branch: "^main$"
     included_files:
-      - "projects/ml-common/**"
+      - "projects/ml_common/**"
       - "projects/serving/**"
       - "pyproject.toml"
       - "uv.lock"
@@ -50,9 +50,9 @@ triggers:
     filename: ".cloudbuild/post-training.cloudbuild.yaml"
     branch: "^main$"
     included_files:
-      - "projects/obs-common/**"
-      - "projects/ml-common/**"
-      - "projects/post-training/**"
+      - "projects/obs_common/**"
+      - "projects/ml_common/**"
+      - "projects/post_training/**"
       - "pyproject.toml"
       - "uv.lock"
 
@@ -61,15 +61,15 @@ triggers:
     filename: ".cloudbuild/training-pipeline.cloudbuild.yaml"
     branch: "^main$"
     included_files:
-      - "projects/training-pipeline/**"
+      - "projects/training_pipeline/**"
 
   drift-monitor-trigger:
     description: "Build and deploy the drift monitor container"
     filename: ".cloudbuild/drift-monitor.cloudbuild.yaml"
     branch: "^main$"
     included_files:
-      - "projects/obs-common/**"
-      - "projects/ml-common/**"
-      - "projects/drift-monitor/**"
+      - "projects/obs_common/**"
+      - "projects/ml_common/**"
+      - "projects/drift_monitor/**"
       - "pyproject.toml"
       - "uv.lock"

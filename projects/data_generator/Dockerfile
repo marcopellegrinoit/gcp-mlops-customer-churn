@@ -10,8 +10,8 @@ WORKDIR /app
 
 # Copy workspace root manifest and lock, then every package manifest and source
 COPY pyproject.toml uv.lock ./
-COPY projects/obs-common/pyproject.toml projects/obs-common/
-COPY projects/obs-common/src projects/obs-common/src/
+COPY projects/obs_common/pyproject.toml projects/obs_common/
+COPY projects/obs_common/src projects/obs_common/src/
 COPY projects/data_generator/pyproject.toml projects/data_generator/
 COPY projects/data_generator/src projects/data_generator/src/
 

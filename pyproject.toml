@@ -1,14 +1,14 @@
 [tool.uv.workspace]
 members = [
-    "projects/obs-common",
-    "projects/ml-common",
+    "projects/obs_common",
+    "projects/ml_common",
     "projects/data_generator",
     "projects/modeling",
     "projects/trainer",
     "projects/serving",
-    "projects/post-training",
-    "projects/training-pipeline",
-    "projects/drift-monitor",
+    "projects/post_training",
+    "projects/training_pipeline",
+    "projects/drift_monitor",
 ]
 
 [tool.uv]

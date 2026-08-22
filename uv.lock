@@ -428,7 +428,7 @@ dev = [
 requires-dist = [
     { name = "google-cloud-bigquery", specifier = ">=3.0.0" },
     { name = "numpy", specifier = ">=1.26.0" },
-    { name = "obs-common", editable = "projects/obs-common" },
+    { name = "obs-common", editable = "projects/obs_common" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "testcontainers", marker = "extra == 'dev'", specifier = ">=4.0.0" },
@@ -493,7 +493,7 @@ wheels = [
 [[package]]
 name = "drift-monitor"
 version = "0.1.0"
-source = { editable = "projects/drift-monitor" }
+source = { editable = "projects/drift_monitor" }
 dependencies = [
     { name = "google-cloud-aiplatform", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-bigquery", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -514,8 +514,8 @@ requires-dist = [
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
     { name = "google-cloud-storage", specifier = ">=3.0.0,<4" },
-    { name = "ml-common", editable = "projects/ml-common" },
-    { name = "obs-common", editable = "projects/obs-common" },
+    { name = "ml-common", editable = "projects/ml_common" },
+    { name = "obs-common", editable = "projects/obs_common" },
     { name = "pandas", specifier = ">=3,<4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
@@ -1320,7 +1320,7 @@ wheels = [
 [[package]]
 name = "ml-common"
 version = "0.1.0"
-source = { editable = "projects/ml-common" }
+source = { editable = "projects/ml_common" }
 dependencies = [
     { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "pandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -1369,7 +1369,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ml-common", editable = "projects/ml-common" },
+    { name = "ml-common", editable = "projects/ml_common" },
     { name = "numpy", specifier = "==2.4.6" },
     { name = "optuna", specifier = "==4.9.0" },
     { name = "pandas", specifier = "==3.0.3" },
@@ -1473,7 +1473,7 @@ wheels = [
 [[package]]
 name = "obs-common"
 version = "0.1.0"
-source = { editable = "projects/obs-common" }
+source = { editable = "projects/obs_common" }
 
 [package.optional-dependencies]
 dev = [
@@ -1632,7 +1632,7 @@ wheels = [
 [[package]]
 name = "post-training"
 version = "0.1.0"
-source = { editable = "projects/post-training" }
+source = { editable = "projects/post_training" }
 dependencies = [
     { name = "db-dtypes", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-aiplatform", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -1657,8 +1657,8 @@ requires-dist = [
     { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.0.0,<3" },
     { name = "google-cloud-storage", specifier = ">=3.0.0,<4" },
-    { name = "ml-common", editable = "projects/ml-common" },
-    { name = "obs-common", editable = "projects/obs-common" },
+    { name = "ml-common", editable = "projects/ml_common" },
+    { name = "obs-common", editable = "projects/obs_common" },
     { name = "pandas", specifier = ">=3,<4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
@@ -2137,7 +2137,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.110.0,<1" },
     { name = "google-cloud-storage", specifier = ">=3.0.0,<4" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
-    { name = "ml-common", editable = "projects/ml-common" },
+    { name = "ml-common", editable = "projects/ml_common" },
     { name = "pandas", specifier = ">=3,<4" },
     { name = "pydantic-settings", specifier = ">=2,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -2352,9 +2352,9 @@ requires-dist = [
     { name = "google-cloud-storage", specifier = ">=3.0.0,<4" },
     { name = "ipywidgets", marker = "extra == 'dev'", specifier = ">=8.0.0,<9" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.9.0,<4" },
-    { name = "ml-common", editable = "projects/ml-common" },
+    { name = "ml-common", editable = "projects/ml_common" },
     { name = "modeling", editable = "projects/modeling" },
-    { name = "obs-common", editable = "projects/obs-common" },
+    { name = "obs-common", editable = "projects/obs_common" },
     { name = "pandas", specifier = ">=3,<4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
@@ -2367,7 +2367,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "training-pipeline"
 version = "0.1.0"
-source = { editable = "projects/training-pipeline" }
+source = { editable = "projects/training_pipeline" }
 dependencies = [
     { name = "google-cloud-pipeline-components", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "kfp", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },

@@ -2,7 +2,7 @@ steps:
   - id: test
     name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
     entrypoint: uv
-    dir: projects/post-training
+    dir: projects/post_training
     env:
       - UV_LINK_MODE=copy
     args:
@@ -27,7 +27,7 @@ steps:
       - -t
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/post-training:latest
       - -f
-      - projects/post-training/Dockerfile
+      - projects/post_training/Dockerfile
       - .
 
   - id: push

@@ -75,7 +75,7 @@ No Dockerfile, no KFP pipeline, no orchestration. The notebook talks directly to
 
 ### Unit tests
 
-All tests in `projects/modeling/tests/` and `projects/ml-common/tests/` use synthetic DataFrames and run with no GCP credentials:
+All tests in `projects/modeling/tests/` and `projects/ml_common/tests/` use synthetic DataFrames and run with no GCP credentials:
 
 ```bash
 uv run --package modeling pytest -m "not integration"
@@ -84,7 +84,7 @@ uv run --package ml-common pytest -m "not integration"
 
 ### What the DS owns
 
-All ML decisions live in `projects/modeling/` and `projects/ml-common/`:
+All ML decisions live in `projects/modeling/` and `projects/ml_common/`:
 
 | File | Package | What the DS controls |
 |---|---|---|

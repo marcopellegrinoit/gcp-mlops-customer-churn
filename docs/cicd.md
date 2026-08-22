@@ -60,14 +60,14 @@ Cloud Build triggers fire on pushes to `main`, each scoped to its own file paths
 
 | Trigger | Watched paths | Build config |
 |---------|--------------|--------------|
-| `data-gen-trigger` | `projects/obs-common/**`, `projects/data_generator/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/data-gen.cloudbuild.yaml` |
+| `data-gen-trigger` | `projects/obs_common/**`, `projects/data_generator/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/data-gen.cloudbuild.yaml` |
 | `dbt-trigger` | `projects/dbt_transform/**` | `.cloudbuild/dbt.cloudbuild.yaml` |
 | `workflow-trigger` | `workflows/**` | `.cloudbuild/workflow.cloudbuild.yaml` |
-| `trainer-trigger` | `projects/obs-common/**`, `projects/ml-common/**`, `projects/modeling/**`, `projects/trainer/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/trainer.cloudbuild.yaml` |
-| `post-training-trigger` | `projects/obs-common/**`, `projects/ml-common/**`, `projects/post-training/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/post-training.cloudbuild.yaml` |
-| `serving-trigger` | `projects/ml-common/**`, `projects/serving/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/serving.cloudbuild.yaml` |
-| `training-pipeline-trigger` | `projects/training-pipeline/**` | `.cloudbuild/training-pipeline.cloudbuild.yaml` |
-| `drift-monitor-trigger` | `projects/obs-common/**`, `projects/ml-common/**`, `projects/drift-monitor/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/drift-monitor.cloudbuild.yaml` |
+| `trainer-trigger` | `projects/obs_common/**`, `projects/ml_common/**`, `projects/modeling/**`, `projects/trainer/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/trainer.cloudbuild.yaml` |
+| `post-training-trigger` | `projects/obs_common/**`, `projects/ml_common/**`, `projects/post_training/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/post-training.cloudbuild.yaml` |
+| `serving-trigger` | `projects/ml_common/**`, `projects/serving/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/serving.cloudbuild.yaml` |
+| `training-pipeline-trigger` | `projects/training_pipeline/**` | `.cloudbuild/training-pipeline.cloudbuild.yaml` |
+| `drift-monitor-trigger` | `projects/obs_common/**`, `projects/ml_common/**`, `projects/drift_monitor/**`, `pyproject.toml`, `uv.lock` | `.cloudbuild/drift-monitor.cloudbuild.yaml` |
 
 The workflow trigger runs a single `gcloud workflows deploy` step — no container build involved. It requires the Cloud Build SA to hold `roles/workflows.editor`.
 
@@ -118,7 +118,7 @@ A root [`.dockerignore`](../.dockerignore) keeps that context from carrying the 
 
 3. **Secure Artifact Staging:** Compiled container runtimes are automatically tagged with immutable version identifiers and pushed into a private, secure Google Artifact Registry repository.
 
-4. **Programmatic Pipeline Compilation:** `training-pipeline-trigger` fires two ways: directly, when `projects/training-pipeline/**` changes, or chained, as the final `trigger-pipeline-compile` step of `trainer-trigger`, `post-training-trigger`, and `serving-trigger` (`gcloud builds triggers run training-pipeline-trigger`). Because Cloud Build steps run sequentially and stop on first failure, that chaining step is only reached after a component's `test` → `build` → `push` steps all succeed — a broken image build never triggers a pipeline recompile. This is one-directional decoupling: editing the pipeline doesn't rebuild/push an unchanged image, but a verified trainer/post-training/serving rebuild does trigger a recompile.
+4. **Programmatic Pipeline Compilation:** `training-pipeline-trigger` fires two ways: directly, when `projects/training_pipeline/**` changes, or chained, as the final `trigger-pipeline-compile` step of `trainer-trigger`, `post-training-trigger`, and `serving-trigger` (`gcloud builds triggers run training-pipeline-trigger`). Because Cloud Build steps run sequentially and stop on first failure, that chaining step is only reached after a component's `test` → `build` → `push` steps all succeed — a broken image build never triggers a pipeline recompile. This is one-directional decoupling: editing the pipeline doesn't rebuild/push an unchanged image, but a verified trainer/post-training/serving rebuild does trigger a recompile.
 
    The compile build first runs a `resolve-digests` step that looks up the current digest behind each `trainer:latest`/`post-training:latest`/`serving:latest` tag via `gcloud artifacts docker images describe` and writes `repo@sha256:...` references to the workspace. The `compile-pipeline` step then runs `uv run --package training-pipeline python -m training_pipeline.pipeline` against those pinned digests (not the moving `:latest` tag) to compile the Python-defined KFP graph into a declarative template (`pipeline.yaml`). Pinning to a digest at compile time — rather than letting each pipeline step resolve `:latest` independently at pull time — guarantees every stage of a given pipeline run uses the exact same image, even if someone pushes a new `:latest` mid-run. `training-pipeline` is never containerised — this step runs the package directly in a `uv` build runner.
 

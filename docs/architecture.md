@@ -10,9 +10,9 @@ The repository uses a single, global lockfile to guarantee complete reproducibil
 
 ```mermaid
 flowchart LR
-    subgraph Packages["packages/ & obs-common, ml-common, modeling (sharable libraries)"]
-        OBS[obs-common<br/>stdlib only]
-        MLC[ml-common<br/>preprocessing, gate metrics]
+    subgraph Packages["packages/ & obs_common, ml_common, modeling (sharable libraries)"]
+        OBS[obs_common<br/>stdlib only]
+        MLC[ml_common<br/>preprocessing, gate metrics]
         MOD[modeling<br/>XGBoost, Optuna, SHAP]
     end
 
@@ -20,12 +20,12 @@ flowchart LR
         DG[data_generator]
         DBT[dbt_transform]
         TR[trainer]
-        PT[post-training]
+        PT[post_training]
         SV[serving]
-        DM[drift-monitor]
+        DM[drift_monitor]
     end
 
-    TP[training-pipeline<br/>compiled by CI, never containerised]
+    TP[training_pipeline<br/>compiled by CI, never containerised]
 
     MLC --> MOD
 
@@ -91,18 +91,18 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 │   │   ├── dbt_project.yml     # Core dbt configuration
 │   │   └── models/             # SQL transformation files
 │   │
-│   ├── training-pipeline/      # KFP pipeline definition (compile + stage only)
+│   ├── training_pipeline/      # KFP pipeline definition (compile + stage only)
 │   │   ├── pyproject.toml      # Dependencies: modeling (workspace) + kfp
 │   │   └── src/training_pipeline/
 │   │       ├── pipeline.py     # build_pipeline(), compile_pipeline() — never runs in a container
 │   │       └── upload.py       # upload_pipeline() — pushes pipeline.yaml to the pipeline-templates KFP Artifact Registry repo
 │   │
-│   ├── obs-common/              # MLE-owned observability helpers (stdlib only, zero deps)
+│   ├── obs_common/              # MLE-owned observability helpers (stdlib only, zero deps)
 │   │   ├── pyproject.toml      # Dependencies: none — installed into every image
 │   │   ├── src/obs_common/     # logging — Cloud Logging severity-correct log setup
 │   │   └── tests/              # Unit tests runnable without GCP credentials
 │   │
-│   ├── ml-common/               # DS-owned inference logic (no GCP deps, no optuna/shap)
+│   ├── ml_common/               # DS-owned inference logic (no GCP deps, no optuna/shap)
 │   │   ├── pyproject.toml      # Dependencies: xgboost, sklearn, pandas, pyarrow
 │   │   ├── src/ml_common/      # preprocess, evaluate — shared by training, post-training, serving
 │   │   └── tests/              # Unit tests runnable without GCP credentials
@@ -120,7 +120,7 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 │   │       ├── experiment.py   # Vertex AI Experiments logging wrapping hpo/train stages
 │   │       └── main.py         # CLI dispatcher: data_split, hpo, train
 │   │
-│   ├── post-training/           # MLE-owned post-training champion/challenger gate
+│   ├── post_training/           # MLE-owned post-training champion/challenger gate
 │   │   ├── Dockerfile
 │   │   ├── pyproject.toml      # Dependencies: ml-common, obs-common (workspace) + GCP client libs
 │   │   └── src/post_training/
@@ -141,7 +141,6 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 ├── notebooks/                  # Data scientist exploration notebooks (not deployed)
 │   └── model_iteration.ipynb   # Local training loop: pull BQ data, run HPO, inspect SHAP
 ├── workflows/                  # Cloud Workflows YAML orchestration engine maps
-├── deployment/                 # Shared deployment assets
 └── iac/                        # Infrastructure as code (APIs, BigQuery, AR, Cloud Run, Cloud Build)
     ├── config/                 # One YAML file per resource domain
     │   ├── apis.yaml           # GCP APIs to enable
@@ -173,15 +172,14 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 * **Projects Directory (`projects/`):**
   * `data_generator/`: The CDC simulation module. Executes as an ephemeral Cloud Run job to append synthetic events to BigQuery, mimicking an upstream transactional database feed. Each invocation streams a configurable batch of events (`BATCH_SIZE`, default 2000) drawn from a fixed user pool, with realistic churn-correlated signals. Structural anomalies can be injected at a configurable rate (`ANOMALY_RATE`) to test downstream drift detection. Runtime targets are injected via env vars: `BQ_PROJECT_ID`, `BQ_DATASET_ID`, `BQ_TABLE_ID`.
   * `dbt_transform/`: The feature engineering engine. Contains the dbt project configuration, SQL models, and dependencies required to transform raw CDC telemetry into structured, ML-ready feature matrices.
-  * `training-pipeline/`: The KFP pipeline definition package. Contains `build_pipeline()` and `compile_pipeline()` — used by Cloud Build to compile the six-stage training DAG into a Vertex AI Pipelines YAML, and `upload_pipeline()` to push that template into the `pipeline-templates` Artifact Registry repo via `kfp.registry.RegistryClient`. This package is never containerised; it installs only `kfp` and `modeling` (for HPO defaults). It has its own dedicated `training-pipeline-trigger`, decoupled from the trainer/post-training/serving image builds, so pipeline-structure-only changes don't force a container rebuild.
-  * `obs-common/`: The MLE-owned observability package. Contains `configure_logging()`, the Cloud Logging-aware replacement for `logging.basicConfig` that every container entrypoint calls at startup — see [observability.md](observability.md#log-severity). Deliberately stdlib-only: it is the one package installed into *every* image, including `data_generator`, which carries no ML or GCP libraries beyond the BigQuery client, so any dependency added here would land in all of them.
-  * `ml-common/`: The DS-owned inference logic package. Contains feature preprocessing and the champion/challenger metrics gate — pure Python, no GCP dependencies, and critically no Optuna/SHAP. Shared by `modeling` (training), `post-training` (the champion/challenger gate), and `serving` (batch prediction), so none of those containers install training-only dependencies.
-  * `modeling/`: The DS-owned training/HPO package. Contains XGBoost training and Optuna HPO, depending on `ml-common` for preprocessing — pure Python with no GCP dependencies. Unit-testable without cloud credentials.
-  * `trainer/`: The MLE-owned heavy pipeline wrapper. Imports `modeling`/`ml-common` as workspace dependencies and adds GCP I/O for the `data_split`/`hpo`/`train` stages: BigQuery → GCS Parquet export and Vertex AI Experiments logging. Produces the trainer container image.
-  * `post-training/`: The MLE-owned post-training pipeline stage container. Imports `ml-common` only (no Optuna/SHAP) and adds GCP I/O for the `evaluate`/`register_or_reject`/`notify` CLI stages: the champion/challenger gate, Vertex AI Model Registry promotion, and the terminal outcome report (logging-only — see [observability.md](observability.md)). This container never serves live predictions — it only runs as one-shot KFP pipeline steps, each invoking a different CLI subcommand.
-  * `serving/`: The MLE-owned production batch-prediction container. Imports `ml-common` only (no Optuna/SHAP) and exposes a FastAPI app (`app.py`) implementing Vertex AI's custom-container prediction contract (`/predict`, `/health`), used by Vertex AI `BatchPredictionJob` to score the daily feature snapshot. Distinct from `post-training`: this image never runs pipeline stages, it only ever serves predictions.
+  * `training_pipeline/`: The KFP pipeline definition package. Contains `build_pipeline()` and `compile_pipeline()` — used by Cloud Build to compile the six-stage training DAG into a Vertex AI Pipelines YAML, and `upload_pipeline()` to push that template into the `pipeline-templates` Artifact Registry repo via `kfp.registry.RegistryClient`. This package is never containerised; it installs only `kfp` and `modeling` (for HPO defaults). It has its own dedicated `training-pipeline-trigger`, decoupled from the trainer/post-training/serving image builds, so pipeline-structure-only changes don't force a container rebuild.
+  * `obs_common/`: The MLE-owned observability package. Contains `configure_logging()`, the Cloud Logging-aware replacement for `logging.basicConfig` that every container entrypoint calls at startup — see [observability.md](observability.md#log-severity). Deliberately stdlib-only: it is the one package installed into *every* image, including `data_generator`, which carries no ML or GCP libraries beyond the BigQuery client, so any dependency added here would land in all of them.
+  * `ml_common/`: The DS-owned inference logic package. Contains feature preprocessing and the champion/challenger metrics gate — pure Python, no GCP dependencies, and critically no Optuna/SHAP. Shared by `modeling` (training), `post_training` (the champion/challenger gate), and `serving` (batch prediction), so none of those containers install training-only dependencies.
+  * `modeling/`: The DS-owned training/HPO package. Contains XGBoost training and Optuna HPO, depending on `ml_common` for preprocessing — pure Python with no GCP dependencies. Unit-testable without cloud credentials.
+  * `trainer/`: The MLE-owned heavy pipeline wrapper. Imports `modeling`/`ml_common` as workspace dependencies and adds GCP I/O for the `data_split`/`hpo`/`train` stages: BigQuery → GCS Parquet export and Vertex AI Experiments logging. Produces the trainer container image.
+  * `post_training/`: The MLE-owned post-training pipeline stage container. Imports `ml_common` only (no Optuna/SHAP) and adds GCP I/O for the `evaluate`/`register_or_reject`/`notify` CLI stages: the champion/challenger gate, Vertex AI Model Registry promotion, and the terminal outcome report (logging-only — see [observability.md](observability.md)). This container never serves live predictions — it only runs as one-shot KFP pipeline steps, each invoking a different CLI subcommand.
+  * `serving/`: The MLE-owned production batch-prediction container. Imports `ml_common` only (no Optuna/SHAP) and exposes a FastAPI app (`app.py`) implementing Vertex AI's custom-container prediction contract (`/predict`, `/health`), used by Vertex AI `BatchPredictionJob` to score the daily feature snapshot. Distinct from `post-training`: this image never runs pipeline stages, it only ever serves predictions.
 * **Workflows Directory (`workflows/`):** Contains the state-machine logic maps for the cloud orchestrator, detailing execution steps, retry policies, and failure notification boundaries.
-* **Deployment Directory (`deployment/`):** Centralizes Dockerfile definitions and build context controls for the custom execution runtimes.
 * **IaC Directory (`iac/`):** Houses the declarative infrastructure code required to bootstrap and manage the GCP environment. See [iac.md](iac.md) for full details.
 
 ---
@@ -259,8 +257,8 @@ Directory names in `projects/` are Python package names and follow PEP 8 (lowerc
 |---|---|
 | `projects/data_generator/` | `data-gen-job` Cloud Run Job |
 | `projects/dbt_transform/` | `dbt-job` Cloud Run Job |
-| `projects/modeling/` | No GCP resource — consumed as a library by `trainer` and `training-pipeline` |
+| `projects/modeling/` | No GCP resource — consumed as a library by `trainer` and `training_pipeline` |
 | `projects/trainer/` | Trainer container image pushed to Artifact Registry |
-| `projects/training-pipeline/` | KFP compilation step — no persistent GCP resource, not containerised |
-| `projects/post-training/` | Post-training container image pushed to Artifact Registry — runs as KFP pipeline steps only |
+| `projects/training_pipeline/` | KFP compilation step — no persistent GCP resource, not containerised |
+| `projects/post_training/` | Post-training container image pushed to Artifact Registry — runs as KFP pipeline steps only |
 | `projects/serving/` | Vertex AI Endpoint / serving container |

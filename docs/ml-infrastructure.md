@@ -204,7 +204,7 @@ None of this is implemented — it's documented here as the concrete shape the w
 | Evaluate, register, notify | `{region}-docker.pkg.dev/{project}/containers/post-training` | Python 3.13 slim + XGBoost, scikit-learn (transitively, via `ml-common` — post-training's own code never imports either) — no Optuna/SHAP, no FastAPI |
 | Score, batch prediction | `{region}-docker.pkg.dev/{project}/containers/serving` | Python 3.13 slim + XGBoost, scikit-learn, FastAPI — no Optuna/SHAP |
 
-The trainer image is built from `projects/trainer/Dockerfile`. It installs `trainer` and its workspace dependencies `modeling`/`ml-common` in a single `uv sync` step. The post-training image is built from `projects/post-training/Dockerfile` and installs `post-training` + `ml-common` only. The serving image is built from `projects/serving/Dockerfile` and installs `serving` + `ml-common` only.
+The trainer image is built from `projects/trainer/Dockerfile`. It installs `trainer` and its workspace dependencies `modeling`/`ml-common` in a single `uv sync` step. The post-training image is built from `projects/post_training/Dockerfile` and installs `post-training` + `ml-common` only. The serving image is built from `projects/serving/Dockerfile` and installs `serving` + `ml-common` only.
 
 ### Package responsibilities
 

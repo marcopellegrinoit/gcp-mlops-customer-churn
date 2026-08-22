@@ -10,10 +10,10 @@ WORKDIR /app
 
 # Copy workspace root manifest and lock, then all package manifests and sources
 COPY pyproject.toml uv.lock ./
-COPY projects/obs-common/pyproject.toml projects/obs-common/
-COPY projects/obs-common/src projects/obs-common/src/
-COPY projects/ml-common/pyproject.toml projects/ml-common/
-COPY projects/ml-common/src projects/ml-common/src/
+COPY projects/obs_common/pyproject.toml projects/obs_common/
+COPY projects/obs_common/src projects/obs_common/src/
+COPY projects/ml_common/pyproject.toml projects/ml_common/
+COPY projects/ml_common/src projects/ml_common/src/
 COPY projects/modeling/pyproject.toml projects/modeling/
 COPY projects/modeling/src projects/modeling/src/
 COPY projects/trainer/pyproject.toml projects/trainer/

@@ -2,7 +2,7 @@ steps:
   - id: test
     name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
     entrypoint: uv
-    dir: projects/drift-monitor
+    dir: projects/drift_monitor
     env:
       - UV_LINK_MODE=copy
     args:
@@ -25,7 +25,7 @@ steps:
       - -t
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/drift-monitor:latest
       - -f
-      - projects/drift-monitor/Dockerfile
+      - projects/drift_monitor/Dockerfile
       - .
 
   - id: push

@@ -2,7 +2,7 @@ steps:
   - id: test-ml-common
     name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
     entrypoint: uv
-    dir: projects/ml-common
+    dir: projects/ml_common
     env:
       - UV_LINK_MODE=copy
     args:

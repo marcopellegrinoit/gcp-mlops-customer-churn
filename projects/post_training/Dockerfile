@@ -10,15 +10,15 @@ WORKDIR /app
 
 # Copy workspace root manifest and lock, then every package manifest and source
 COPY pyproject.toml uv.lock ./
-COPY projects/obs-common/pyproject.toml projects/obs-common/
-COPY projects/obs-common/src projects/obs-common/src/
-COPY projects/ml-common/pyproject.toml projects/ml-common/
-COPY projects/ml-common/src projects/ml-common/src/
-COPY projects/drift-monitor/pyproject.toml projects/drift-monitor/
-COPY projects/drift-monitor/src projects/drift-monitor/src/
+COPY projects/obs_common/pyproject.toml projects/obs_common/
+COPY projects/obs_common/src projects/obs_common/src/
+COPY projects/ml_common/pyproject.toml projects/ml_common/
+COPY projects/ml_common/src projects/ml_common/src/
+COPY projects/post_training/pyproject.toml projects/post_training/
+COPY projects/post_training/src projects/post_training/src/
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable --package drift-monitor
+    uv sync --frozen --no-dev --no-editable --package post-training
 
 FROM python:${PYTHON_VERSION}-slim-trixie
 
@@ -32,4 +32,4 @@ USER appuser
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-ENTRYPOINT ["python", "-m", "drift_monitor.main"]
+ENTRYPOINT ["python", "-m", "post_training.main"]

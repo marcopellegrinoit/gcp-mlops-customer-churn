@@ -80,7 +80,7 @@ On every subsequent training run, the `evaluate` stage computes the **Spearman r
 
 Once the notebook has produced a recommended feature list, the data scientist must propagate it through the stack manually:
 
-1. **`projects/ml-common/src/ml_common/preprocess.py`** — update `CATEGORICAL_COLS`/`DROP_COLS` if a categorical or metadata column changed. There is no separate `FEATURE_COLUMNS` manifest: the feature set is implicit in the `features.customer_features` BigQuery schema plus `feature_names()`, and both the training and serving containers consume it from there
+1. **`projects/ml_common/src/ml_common/preprocess.py`** — update `CATEGORICAL_COLS`/`DROP_COLS` if a categorical or metadata column changed. There is no separate `FEATURE_COLUMNS` manifest: the feature set is implicit in the `features.customer_features` BigQuery schema plus `feature_names()`, and both the training and serving containers consume it from there
 2. **`projects/dbt_transform/models/`** — add or remove columns from `int_customer_aggregates.sql` and `customer_features.sql`
 3. **`iac/config/bigquery.yaml`** — add or remove column definitions from the `features.customer_features` table schema
 4. **`docs/data-lifecycle.md`** — update the feature group and full schema tables

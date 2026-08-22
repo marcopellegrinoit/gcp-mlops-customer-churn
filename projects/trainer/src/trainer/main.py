@@ -1,7 +1,7 @@
 """CLI dispatcher for the heavy training pipeline stages (data_split, hpo, train).
 
 The lightweight evaluate/register_or_reject/notify stages run in the separate
-`post-training` container — see projects/post-training/src/post_training/main.py —
+`post-training` container — see projects/post_training/src/post_training/main.py —
 so this image never installs their GCP-only dependencies.
 
 Each stage is invoked as an independent container command by the KFP pipeline.
