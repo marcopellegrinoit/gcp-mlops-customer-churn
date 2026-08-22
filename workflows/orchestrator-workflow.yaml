@@ -453,6 +453,26 @@ sync_predictions_to_ml_predictions:
           - scratch_dataset: ${text.replace_all(batch_predict_job.outputInfo.bigqueryOutputDataset, "bq://", "")}
           - scratch_table: ${scratch_dataset + "." + batch_predict_job.outputInfo.bigqueryOutputTable}
 
+    # Workflows caps a single expression at 400 characters, so the MERGE statement is
+    # assembled across several assignments (each under the cap) and concatenated last.
+    - build_merge_query:
+        assign:
+          - merge_query_part1: >
+              ${"MERGE `" + project_id + ".ml.predictions` T " +
+              "USING (SELECT customer_id, prediction.churn_probability AS churn_probability, " +
+              "prediction.churn_prediction AS churn_prediction, snapshot_date " +
+              "FROM `" + scratch_table + "`) S " +
+              "ON T.customer_id = S.customer_id AND T.snapshot_date = S.snapshot_date "}
+          - merge_query_part2: >
+              ${"WHEN MATCHED THEN UPDATE SET churn_probability = S.churn_probability, " +
+              "churn_prediction = S.churn_prediction, model_version = @model_version, " +
+              "predicted_at = CURRENT_TIMESTAMP() "}
+          - merge_query_part3: >
+              ${"WHEN NOT MATCHED THEN INSERT (customer_id, churn_probability, churn_prediction, " +
+              "model_version, snapshot_date, predicted_at) VALUES (S.customer_id, S.churn_probability, " +
+              "S.churn_prediction, @model_version, S.snapshot_date, CURRENT_TIMESTAMP())"}
+          - merge_query: ${merge_query_part1 + merge_query_part2 + merge_query_part3}
+
     # The model's response is nested under a "prediction" struct rather than flattened
     # to top-level columns for BigQuery-destination batch prediction (same nesting
     # convention drift_monitor.predictions already relies on for this same kind of job's
@@ -479,18 +499,7 @@ sync_predictions_to_ml_predictions:
                       type: "STRING"
                     parameterValue:
                       value: ${champion_model}
-                query: >
-                  ${"MERGE `" + project_id + ".ml.predictions` T " +
-                  "USING (SELECT customer_id, prediction.churn_probability AS churn_probability, " +
-                  "prediction.churn_prediction AS churn_prediction, snapshot_date " +
-                  "FROM `" + scratch_table + "`) S " +
-                  "ON T.customer_id = S.customer_id AND T.snapshot_date = S.snapshot_date " +
-                  "WHEN MATCHED THEN UPDATE SET churn_probability = S.churn_probability, " +
-                  "churn_prediction = S.churn_prediction, model_version = @model_version, " +
-                  "predicted_at = CURRENT_TIMESTAMP() " +
-                  "WHEN NOT MATCHED THEN INSERT (customer_id, churn_probability, churn_prediction, " +
-                  "model_version, snapshot_date, predicted_at) VALUES (S.customer_id, S.churn_probability, " +
-                  "S.churn_prediction, @model_version, S.snapshot_date, CURRENT_TIMESTAMP())"}
+                query: ${merge_query}
         result: submit_resp
 
     - poll:
