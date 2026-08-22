@@ -13,7 +13,7 @@ dependencies = [
     "obs-common",
     "pandas>=3,<4",
     # Infrastructure — GCP client libs track only major versions
-    "db-dtypes>=1.0.0,<2",
+    "db-dtypes>=1.7.1,<2",
     "google-cloud-aiplatform>=1.50.0,<2",
     "google-cloud-bigquery>=3.0.0,<4",
     "google-cloud-bigquery-storage>=2.0.0,<3",

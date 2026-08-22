@@ -437,7 +437,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "db-dtypes"
-version = "1.7.0"
+version = "1.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
@@ -445,9 +445,9 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/67/9f/5569a989ad23915e51fd1b4a52ecbc7513832c1c7b5e5df262bcecae1b21/db_dtypes-1.7.0.tar.gz", hash = "sha256:30951c7cda9e5455e43636eebe041c9a637ff28bc49a95d82cb68759d7625467", size = 35793, upload-time = "2026-06-03T14:52:07.908Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/bc/b348b35245452af9a6c8a360ae3434f027b919349a786d1cb73ded0c234e/db_dtypes-1.7.1.tar.gz", hash = "sha256:75adf3bdf3174a6474ea4162d9a345ea0b3102ec4fd603e69ec26b6e8a99145a", size = 36036, upload-time = "2026-07-08T17:03:35.671Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/be/7a/797ed371bde520223e49dbbe0f8762fa4cc724d0e21fc6af944bb8f82150/db_dtypes-1.7.0-py3-none-any.whl", hash = "sha256:c80a1d9bc7dda3cc63638a3f2cf4ec27af50b809ec2d92b8a94cb9d8438cdc76", size = 17740, upload-time = "2026-06-03T14:51:15.287Z" },
+    { url = "https://files.pythonhosted.org/packages/83/5a/5601050daf8f21d201e7ff68cda559aac56b5be18632876daf7a711809b5/db_dtypes-1.7.1-py3-none-any.whl", hash = "sha256:450b94cd010cfa6d4d13cca2593009eba4fbe15516084c332cde1a47bbce0625", size = 17768, upload-time = "2026-07-08T17:03:03.252Z" },
 ]
 
 [[package]]
@@ -1658,7 +1658,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "db-dtypes", specifier = ">=1.0.0,<2" },
+    { name = "db-dtypes", specifier = ">=1.7.1,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.0.0,<3" },
@@ -2351,7 +2351,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "db-dtypes", specifier = ">=1.0.0,<2" },
+    { name = "db-dtypes", specifier = ">=1.7.1,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.0.0,<3" },
