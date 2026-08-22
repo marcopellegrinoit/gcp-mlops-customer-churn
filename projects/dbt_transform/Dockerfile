@@ -19,6 +19,10 @@ RUN groupadd --gid 1000 appuser && useradd --uid 1000 --gid appuser --no-create-
 
 WORKDIR /app
 
+# dbt writes logs/ and target/ under the working directory at runtime, so appuser
+# needs write access to /app itself, not just the files COPY --chown places in it.
+RUN chown appuser:appuser /app
+
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 COPY --chown=appuser:appuser dbt_project.yml profiles.yml ./
 COPY --chown=appuser:appuser models ./models
