@@ -20,7 +20,18 @@ environments = [
 ]
 # numba 0.53.1 (the version shap pulls without a floor) only supports Python <3.10.
 # numba>=0.61 is the first release that supports Python 3.13 (the Docker base image).
-constraint-dependencies = ["numba>=0.61"]
+#
+# The floors below are not ordinary dependency decisions: they pin transitive packages past
+# versions flagged by GitHub Dependabot alerts on this repo. Each is the first patched release.
+# cryptography: GHSA-g6cj-pr64-35w5 (PKCS#7 Bleichenbacher oracle)
+# pyasn1: GHSA-m4p7-r5rc-7g4j, GHSA-hm4w-wwcw-mr6r, GHSA-8ppf-4f7h-5ppj (DoS via decoder)
+# pydantic-settings: GHSA-4xgf-cpjx-pc3j (symlink traversal in NestedSecretsSettingsSource)
+constraint-dependencies = [
+    "numba>=0.61",
+    "cryptography>=50.0.0",
+    "pyasn1>=0.6.4",
+    "pydantic-settings>=2.14.2",
+]
 
 # Ruff config lives only here: no sub-package declares a [tool.ruff] table, so ruff resolves
 # every file in the workspace against this one. Keeps lint/format rules identical across packages.

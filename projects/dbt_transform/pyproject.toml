@@ -5,3 +5,19 @@ requires-python = ">=3.12"
 dependencies = [
     "dbt-bigquery>=1.12.0",
 ]
+
+[tool.uv]
+# Not ordinary dependency decisions: these floor transitive packages past versions flagged by
+# GitHub Dependabot alerts on this repo. Each is the first patched release.
+# sqlparse: GHSA-prg7-hcfm-mfcr, GHSA-pwgv-4x5q-6m9f, GHSA-f2ff-p2ww-7p4p (ReDoS/CPU DoS), GHSA-3496-9g83-7v6x (SQL string breakout)
+# cryptography: GHSA-g6cj-pr64-35w5 (PKCS#7 Bleichenbacher oracle)
+# pyasn1: GHSA-m4p7-r5rc-7g4j, GHSA-hm4w-wwcw-mr6r, GHSA-8ppf-4f7h-5ppj (DoS via decoder)
+# setuptools: GHSA-h35f-9h28-mq5c (MANIFEST.in exclusion bypass via NFC/NFD collision)
+# msgpack: GHSA-6v7p-g79w-8964 (out-of-bounds read on Unpacker reuse after caught error)
+constraint-dependencies = [
+    "sqlparse>=0.6.0",
+    "cryptography>=50.0.0",
+    "pyasn1>=0.6.4",
+    "setuptools>=83.0.0",
+    "msgpack>=1.2.1",
+]
