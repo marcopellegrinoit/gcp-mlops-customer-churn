@@ -31,6 +31,11 @@ variable "alert_email" {
   default = ""
 }
 
+variable "alert_from_email" {
+  type    = string
+  default = ""
+}
+
 variable "service_account_project_roles" {
   type    = list(string)
   default = []

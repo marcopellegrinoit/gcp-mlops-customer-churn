@@ -14,3 +14,9 @@ variable "alert_email" {
   type        = string
   default     = ""
 }
+
+variable "alert_from_email" {
+  description = "Verified SendGrid sender address operational alert emails are sent from."
+  type        = string
+  default     = "noreply@mlops-alerts.com"
+}

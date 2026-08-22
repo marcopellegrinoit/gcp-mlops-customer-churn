@@ -34,6 +34,7 @@ Every GCP resource lives inside a dedicated module under `iac/modules/`. The roo
 | `cloud_workflow/` | Creates Cloud Workflows orchestrator definitions |
 | `gcs_bucket/` | Creates `google_storage_bucket` resources + optional bucket-level IAM bindings |
 | `vertex_ai_pipeline/` | Creates the dedicated SA the training pipeline runs as + its IAM bindings |
+| `secret_manager/` | Creates a `google_secret_manager_secret` + initial version |
 
 ## BigQuery Tables (`bq_table` module)
 
@@ -95,6 +96,12 @@ The champion/challenger `ModelBatchPredictOp` tasks run under a second, narrower
 Like `cloud_run_job`, the `cloud_workflow` module accepts a `gcs_bucket_roles` map for bucket-level grants (`orchestrator-workflow` uses `roles/storage.objectViewer` on `pipeline-metadata` to read the drift monitor's decision JSON). It also accepts `act_as_service_account_emails`, a list of SA emails the workflow's own SA is granted `roles/iam.serviceAccountUser` on — needed because `orchestrator-workflow` submits the training `PipelineJob` under `vertex-ai-pipeline-sa`, not its own identity. `workflows.yaml` sets `act_as_vertex_pipeline_sa: true` to opt the orchestrator workflow into this grant; `main.tf` resolves the flag to `module.vertex_ai_pipeline.service_account_email`.
 
 `google_workflows_workflow.this` sets `source_contents = file(...)` but carries `lifecycle { ignore_changes = [source_contents] }`, the same pattern `cloud_run_job` uses for `template` (see above): Terraform seeds the initial revision on a fresh project and owns the resource's SA/IAM/scheduler, but ongoing content updates are owned exclusively by `workflow-trigger` (see [cicd.md](cicd.md)), which runs `gcloud workflows deploy` on every push to `main` touching `workflows/**`. Without `ignore_changes`, a `terraform apply` from a stale local checkout would silently revert the live workflow to old content — ignoring the attribute makes Cloud Build the single source of truth for the definition post-creation.
+
+The `alert_email` and `alert_from_email` variables both flow the same way: root `main.tf` passes them into the `cloud_workflow` module, which embeds them in the Cloud Scheduler job's HTTP body (`argument = jsonencode({ ... })`) alongside `project_id`/`region`; `orchestrator-workflow.yaml`'s `main.init` step reads them back out of `args`.
+
+## SendGrid Secret (`secret_manager` module)
+
+`secret_manager` is a minimal, general-purpose module (`google_secret_manager_secret` only) used once today, for `sendgrid-api-key`. It deliberately provisions just the empty container, not a `google_secret_manager_secret_version` — the API key is a credential that should never pass through a `.tf` variable or Terraform state, so it's added by hand after `apply` (`gcloud secrets versions add sendgrid-api-key --data-file=-`, or via the console). With no version yet, `orchestrator-workflow`'s `get_sendgrid_key` subworkflow 404s on `versions/latest:access`, which its `try`/`except` wrapper swallows (see [observability.md](observability.md)). The orchestrator workflow's SA already holds project-scoped `roles/secretmanager.secretAccessor` via `workflows.yaml`, so adding a version by hand is the only step needed to make delivery work — no IAM changes, no Terraform changes.
 
 ## Provisioned Resources
 

@@ -72,9 +72,10 @@ resource "google_cloud_scheduler_job" "this" {
 
     body = base64encode(jsonencode({
       argument = jsonencode({
-        project_id  = var.project_id
-        region      = var.region
-        alert_email = var.alert_email
+        project_id       = var.project_id
+        region           = var.region
+        alert_email      = var.alert_email
+        alert_from_email = var.alert_from_email
       })
     }))
 

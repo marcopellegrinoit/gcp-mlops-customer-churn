@@ -33,6 +33,10 @@ Wasserstein Distance is not currently computed; PSI alone drives the threshold d
 
 The platform sends transactional email alerts via **SendGrid**, called directly from `orchestrator-workflow` (no separate Cloud Run subscriber service) using the `get_sendgrid_key`/`send_failure_alert`/`send_drift_alert` subworkflows in `workflows/orchestrator-workflow.yaml`.
 
+The SendGrid integration is intentionally fictional by default for this showcase project: the `secret_manager` module (`iac/modules/secret_manager/`) provisions the `sendgrid-api-key` Secret Manager secret container, but it starts with no version — the API key itself is never passed through a Terraform variable or state, by design — and `alert_from_email` defaults to the unverified `noreply@mlops-alerts.com`. So a real send always fails. Every call site (`alert_data_gen_failure`, `alert_dbt_failure`, `alert_batch_predict_failure`, `alert_drift_monitor_failure`, `alert_drift_detected`) wraps its `send_failure_alert`/`send_drift_alert` call in `try`/`except` so that failure is swallowed rather than propagated — alerting is best-effort and never masks or replaces the underlying job failure the workflow raises afterward.
+
+To make delivery actually work: add a version to the already-provisioned secret by hand (`gcloud secrets versions add sendgrid-api-key --data-file=-`, or via the console — the workflow's SA already holds `roles/secretmanager.secretAccessor`, so no IAM change is needed), and set `alert_from_email` in `terraform.tfvars` to a sender address verified in the SendGrid account (SendGrid rejects sends from unverified senders regardless of API key validity), then re-apply. `alert_from_email` flows from Terraform through Cloud Scheduler's job body into the workflow's `args`, the same path `alert_email` already uses.
+
 ### Drift Detected
 
 When `orchestrator-workflow` reads `drift_detected = true` from the drift-monitor's decision file, it submits the retraining `PipelineJob` and then sends an email (`send_drift_alert`) to `alert_email` containing:

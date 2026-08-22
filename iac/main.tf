@@ -144,6 +144,15 @@ module "vertex_ai_pipeline" {
   depends_on = [google_project_service.apis, module.bq_dataset, module.gcs_bucket, module.vertex_ai_batch_predict_sa]
 }
 
+module "sendgrid_secret" {
+  source = "./modules/secret_manager"
+
+  project_id = var.project_id
+  secret_id  = "sendgrid-api-key"
+
+  depends_on = [google_project_service.apis]
+}
+
 module "cloud_workflow" {
   source   = "./modules/cloud_workflow"
   for_each = local.all_workflows
@@ -154,6 +163,7 @@ module "cloud_workflow" {
   description                   = each.value.description
   schedule                      = try(each.value.schedule, "")
   alert_email                   = var.alert_email
+  alert_from_email              = var.alert_from_email
   source_contents               = file("${path.root}/../workflows/${each.key}.yaml")
   service_account_project_roles = try(each.value.service_account_project_roles, [])
   gcs_bucket_roles = {

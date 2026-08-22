@@ -1,6 +1,7 @@
-# project_id, region and alert_email come from Cloud Scheduler's HTTP body
-# rather than being hardcoded here. This lets the same YAML run in any
-# environment and also allows manual one-off executions with different targets.
+# project_id, region, alert_email and alert_from_email come from Cloud
+# Scheduler's HTTP body rather than being hardcoded here. This lets the same
+# YAML run in any environment and also allows manual one-off executions with
+# different targets.
 main:
   params: [args]
   steps:
@@ -9,6 +10,7 @@ main:
           - project_id: ${args.project_id}
           - region: ${args.region}
           - alert_email: ${args.alert_email}
+          - alert_from_email: ${args.alert_from_email}
           - model_display_name: "churn-predictor"
 
     - run_data_gen:
@@ -28,14 +30,24 @@ main:
             next: alert_data_gen_failure
         next: run_dbt
 
+    # Alerting is best-effort: a SendGrid/Secret Manager failure here must never
+    # mask or replace the real pipeline failure being reported below.
     - alert_data_gen_failure:
-        call: send_failure_alert
-        args:
-          project_id: ${project_id}
-          to_email: ${alert_email}
-          job_name: "data-gen-job"
-          error: ${data_gen_op.error}
-        result: _
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            job_name: "data-gen-job"
+            error: ${data_gen_op.error}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_data_gen_alert_error:
+                assign:
+                  - alert_send_failed: true
         next: raise_data_gen
 
     - raise_data_gen:
@@ -58,13 +70,21 @@ main:
         next: fetch_champion
 
     - alert_dbt_failure:
-        call: send_failure_alert
-        args:
-          project_id: ${project_id}
-          to_email: ${alert_email}
-          job_name: "dbt-job"
-          error: ${dbt_op.error}
-        result: _
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            job_name: "dbt-job"
+            error: ${dbt_op.error}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_dbt_alert_error:
+                assign:
+                  - alert_send_failed: true
         next: raise_dbt
 
     - raise_dbt:
@@ -105,13 +125,21 @@ main:
         next: run_drift_monitor
 
     - alert_batch_predict_failure:
-        call: send_failure_alert
-        args:
-          project_id: ${project_id}
-          to_email: ${alert_email}
-          job_name: "batch-predict-job"
-          error: ${batch_predict_job}
-        result: _
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            job_name: "batch-predict-job"
+            error: ${batch_predict_job}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_batch_predict_alert_error:
+                assign:
+                  - alert_send_failed: true
         next: raise_batch_predict
 
     - raise_batch_predict:
@@ -135,13 +163,21 @@ main:
         next: read_drift_decision
 
     - alert_drift_monitor_failure:
-        call: send_failure_alert
-        args:
-          project_id: ${project_id}
-          to_email: ${alert_email}
-          job_name: "drift-monitor-job"
-          error: ${drift_monitor_op.error}
-        result: _
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            job_name: "drift-monitor-job"
+            error: ${drift_monitor_op.error}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_drift_monitor_alert_error:
+                assign:
+                  - alert_send_failed: true
         next: raise_drift_monitor
 
     - raise_drift_monitor:
@@ -172,13 +208,21 @@ main:
         result: pipeline_job
 
     - alert_drift_detected:
-        call: send_drift_alert
-        args:
-          project_id: ${project_id}
-          to_email: ${alert_email}
-          decision: ${drift_decision.body}
-          pipeline_job: ${pipeline_job}
-        result: _
+        try:
+          call: send_drift_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            decision: ${drift_decision.body}
+            pipeline_job: ${pipeline_job}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_drift_alert_error:
+                assign:
+                  - alert_send_failed: true
         next: done
 
     - done:
@@ -392,7 +436,7 @@ get_sendgrid_key:
 
 
 send_failure_alert:
-  params: [project_id, to_email, job_name, error]
+  params: [project_id, to_email, from_email, job_name, error]
   steps:
     - get_key:
         call: get_sendgrid_key
@@ -412,7 +456,7 @@ send_failure_alert:
               - to:
                   - email: ${to_email}
             from:
-              email: "noreply@mlops-alerts.com"
+              email: ${from_email}
             subject: '${"[MLOps Alert] Pipeline failure: " + job_name}'
             content:
               - type: "text/plain"
@@ -424,7 +468,7 @@ send_failure_alert:
 
 
 send_drift_alert:
-  params: [project_id, to_email, decision, pipeline_job]
+  params: [project_id, to_email, from_email, decision, pipeline_job]
   steps:
     - get_key:
         call: get_sendgrid_key
@@ -444,7 +488,7 @@ send_drift_alert:
               - to:
                   - email: ${to_email}
             from:
-              email: "noreply@mlops-alerts.com"
+              email: ${from_email}
             subject: "[MLOps Alert] Data drift detected — retraining triggered"
             content:
               - type: "text/plain"
