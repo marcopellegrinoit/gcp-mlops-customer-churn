@@ -128,7 +128,10 @@ def build_pipeline(trainer_image: str, post_training_image: str, serving_image: 
         # training-data bucket the model artifacts and batch-test instances live in, rather
         # than the pipeline's own broader SA or the system-generated default (which has no
         # bucket access at all).
-        with dsl.If(fetch_champion_task.outputs["champion_model_id"] != "", "has-champion"):
+        with dsl.If(
+            condition=fetch_champion_task.outputs["champion_model_id"] != "",
+            name="has-champion",
+        ):
             # Fetch the champion as a Vertex Model artifact (required input type for
             # ModelBatchPredictOp). model_name must be the bare model ID — ModelGetOp builds the
             # full resource name itself from project/location/model_name, so a full resource name
@@ -157,7 +160,7 @@ def build_pipeline(trainer_image: str, post_training_image: str, serving_image: 
                 .set_display_name("extract-champion-test-predictions-uri")
                 .output
             )
-        with dsl.Else():
+        with dsl.Else(name="no-champion"):
             # No champion yet (first-ever pipeline run) — nothing to score.
             predictions_dir_else = (
                 tasks.no_champion_placeholder().set_display_name("no-champion-placeholder").output
