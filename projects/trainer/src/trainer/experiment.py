@@ -7,8 +7,10 @@ import uuid
 
 import modeling.hpo as ml_hpo
 import modeling.train as ml_train
+import pandas as pd
 import xgboost as xgb
 from google.cloud import aiplatform, storage
+from ml_common.config import CHURN_PROBABILITY_FIELD
 from ml_common.drift import compute_baseline_stats
 from ml_common.preprocess import prepare_features
 from modeling import config as ml_config
@@ -111,7 +113,9 @@ def run_train_stage(
     aiplatform.log_params({"artifact_uri": artifact_uri})
     aiplatform.end_run()
 
+    train_scores = pd.DataFrame({CHURN_PROBABILITY_FIELD: model.predict_proba(X)[:, 1]})
     baseline_stats = compute_baseline_stats(X)
+    baseline_stats.update(compute_baseline_stats(train_scores))
     _upload_artifacts(model, feat_names, shap_importance, threshold, baseline_stats, artifact_uri)
     return artifact_uri
 
@@ -126,9 +130,10 @@ def _upload_artifacts(
 ) -> None:
     """Save model.ubj and metadata.json to a GCS artifact directory.
 
-    baseline_stats freezes this training run's per-feature distribution so the
-    drift monitor can later compare live traffic against it without needing
-    access to the original training data.
+    baseline_stats freezes this training run's per-feature distribution, plus the
+    training-time churn_probability distribution, so the drift monitor can later
+    compare live feature and score traffic against them without needing access to
+    the original training data.
     """
     bucket_name, prefix = _split_uri(artifact_uri)
     client = storage.Client()

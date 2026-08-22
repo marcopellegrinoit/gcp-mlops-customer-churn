@@ -48,8 +48,13 @@ cloud_run_jobs:
       MODEL_DISPLAY_NAME: "churn-predictor"
       GCS_BUCKET: "pipeline-metadata"
       DECISION_BLOB: "drift/latest.json"
+      # Must match submit_batch_predict's displayName in workflows/orchestrator-workflow.yaml —
+      # disambiguates the daily production-scoring job from post-training's own evaluation-time
+      # batch prediction runs against the same champion model.
+      BATCH_PREDICT_DISPLAY_NAME: "daily-churn-scoring"
     bq_dataset_roles:
       features: "roles/bigquery.dataViewer"
+      ml: "roles/bigquery.dataViewer"
     gcs_bucket_roles:
       pipeline-metadata: "roles/storage.objectAdmin"
       training-data: "roles/storage.objectViewer"

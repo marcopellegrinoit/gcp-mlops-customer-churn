@@ -21,6 +21,7 @@ def main() -> None:
         model_display_name=platform_config.MODEL_DISPLAY_NAME,
         decision_gcs_uri=decision_gcs_uri,
         psi_threshold=platform_config.PSI_THRESHOLD,
+        batch_predict_display_name=platform_config.BATCH_PREDICT_DISPLAY_NAME,
     )
     log.info("Drift check result: %s", result)
 

@@ -145,9 +145,10 @@ main:
     - raise_batch_predict:
         raise: ${batch_predict_job}
 
-    # Drift monitoring scores the latest feature snapshot against the champion's
-    # frozen training baseline — independent of batch prediction's own output —
-    # but runs after it to match the daily DAG's documented step order.
+    # Drift monitoring scores the latest feature snapshot against the champion's frozen
+    # training baseline. Feature-PSI itself is independent of batch prediction's own output;
+    # the score-distribution check it also runs is not — it reads the champion's most recent
+    # BatchPredictionJob output — which is why this still has to run after batch predict.
     - run_drift_monitor:
         call: run_crj
         args:
@@ -198,6 +199,28 @@ main:
         switch:
           - condition: ${drift_decision.body.drift_detected}
             next: trigger_training
+          - condition: ${default(map.get(drift_decision.body, "score_drift_detected"), false)}
+            next: alert_score_drift_only
+        next: done
+
+    # Score drift is monitoring-only: it never submits a PipelineJob, but it still needs a
+    # human-visible signal — otherwise score_psi just sits unread in the decision JSON.
+    - alert_score_drift_only:
+        try:
+          call: send_drift_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            decision: ${drift_decision.body}
+            pipeline_job: null
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_score_drift_alert_error:
+                assign:
+                  - alert_send_failed: true
         next: done
 
     - trigger_training:
@@ -476,6 +499,26 @@ send_drift_alert:
           project_id: ${project_id}
         result: api_key
 
+    # pipeline_job is null for a score-only breach (monitoring-only, no retraining
+    # submitted) — branch the message rather than assuming it's always present.
+    - check_retrain_triggered:
+        switch:
+          - condition: ${pipeline_job != null}
+            next: build_retrain_message
+        next: build_score_only_message
+
+    - build_retrain_message:
+        assign:
+          - subject: "[MLOps Alert] Data drift detected — retraining triggered"
+          - body_text: '${"PSI threshold breached for: " + json.encode_to_string(decision.breached_features) + ". Retraining pipeline submitted: " + pipeline_job.name}'
+        next: send_email
+
+    - build_score_only_message:
+        assign:
+          - subject: "[MLOps Alert] Prediction score drift detected"
+          - body_text: '${"Champion prediction-score PSI=" + string(decision.score_psi) + " exceeds threshold " + string(decision.threshold) + ". Feature distributions are stable, so no retraining was triggered automatically — manual review recommended."}'
+        next: send_email
+
     - send_email:
         call: http.post
         args:
@@ -489,10 +532,10 @@ send_drift_alert:
                   - email: ${to_email}
             from:
               email: ${from_email}
-            subject: "[MLOps Alert] Data drift detected — retraining triggered"
+            subject: ${subject}
             content:
               - type: "text/plain"
-                value: '${"PSI threshold breached for: " + json.encode_to_string(decision.breached_features) + ". Retraining pipeline submitted: " + pipeline_job.name}'
+                value: ${body_text}
         result: _
 
     - done:
