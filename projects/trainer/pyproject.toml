@@ -27,7 +27,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     # Notebook-only: plotting and stats for the DS exploration notebooks in notebooks/
-    "matplotlib>=3.9.0,<4",
+    "matplotlib>=3.11.1,<4",
     "scipy>=1.13.0,<2",
     # Notebook-only: progress bar widget rendering for tqdm in Jupyter
     "ipywidgets>=8.0.0,<9",
