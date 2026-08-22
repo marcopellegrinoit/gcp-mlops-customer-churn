@@ -164,6 +164,7 @@ module "cloud_workflow" {
   schedule                      = try(each.value.schedule, "")
   alert_email                   = var.alert_email
   alert_from_email              = var.alert_from_email
+  alerts_enabled                = var.alerts_enabled
   source_contents               = file("${path.root}/../workflows/${each.key}.yaml")
   service_account_project_roles = try(each.value.service_account_project_roles, [])
   bq_dataset_roles              = try(each.value.bq_dataset_roles, {})

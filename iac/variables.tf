@@ -20,3 +20,9 @@ variable "alert_from_email" {
   type        = string
   default     = "noreply@mlops-alerts.com"
 }
+
+variable "alerts_enabled" {
+  description = "Whether the orchestrator workflow sends SendGrid failure/drift alert emails. Keep false until the sendgrid-api-key secret has a version."
+  type        = bool
+  default     = false
+}

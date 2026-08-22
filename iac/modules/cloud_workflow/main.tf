@@ -85,6 +85,7 @@ resource "google_cloud_scheduler_job" "this" {
         region           = var.region
         alert_email      = var.alert_email
         alert_from_email = var.alert_from_email
+        alerts_enabled   = var.alerts_enabled
       })
     }))
 

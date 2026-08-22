@@ -36,6 +36,12 @@ variable "alert_from_email" {
   default = ""
 }
 
+variable "alerts_enabled" {
+  type        = bool
+  default     = false
+  description = "Whether the workflow sends SendGrid failure/drift alert emails."
+}
+
 variable "service_account_project_roles" {
   type    = list(string)
   default = []

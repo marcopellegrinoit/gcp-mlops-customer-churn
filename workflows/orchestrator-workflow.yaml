@@ -11,6 +11,7 @@ main:
           - region: ${args.region}
           - alert_email: ${args.alert_email}
           - alert_from_email: ${args.alert_from_email}
+          - alerts_enabled: ${args.alerts_enabled}
           - model_display_name: "churn-predictor"
 
     - run_data_gen:
@@ -39,6 +40,7 @@ main:
             project_id: ${project_id}
             to_email: ${alert_email}
             from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
             job_name: "data-gen-job"
             error: ${data_gen_op.error}
           result: _
@@ -76,6 +78,7 @@ main:
             project_id: ${project_id}
             to_email: ${alert_email}
             from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
             job_name: "dbt-job"
             error: ${dbt_op.error}
           result: _
@@ -131,6 +134,7 @@ main:
             project_id: ${project_id}
             to_email: ${alert_email}
             from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
             job_name: "batch-predict-job"
             error: ${batch_predict_job}
           result: _
@@ -172,6 +176,7 @@ main:
             project_id: ${project_id}
             to_email: ${alert_email}
             from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
             job_name: "sync-predictions"
             error: ${sync_predictions_job.status.errorResult}
           result: _
@@ -211,6 +216,7 @@ main:
             project_id: ${project_id}
             to_email: ${alert_email}
             from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
             job_name: "drift-monitor-job"
             error: ${drift_monitor_op.error}
           result: _
@@ -253,6 +259,7 @@ main:
             project_id: ${project_id}
             to_email: ${alert_email}
             from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
             decision: ${drift_decision.body}
             pipeline_job: null
           result: _
@@ -278,6 +285,7 @@ main:
             project_id: ${project_id}
             to_email: ${alert_email}
             from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
             decision: ${drift_decision.body}
             pipeline_job: ${pipeline_job}
           result: _
@@ -612,8 +620,12 @@ get_sendgrid_key:
 
 
 send_failure_alert:
-  params: [project_id, to_email, from_email, job_name, error]
+  params: [project_id, to_email, from_email, alerts_enabled, job_name, error]
   steps:
+    - check_alerts_enabled:
+        switch:
+          - condition: ${not alerts_enabled}
+            next: done
     - get_key:
         call: get_sendgrid_key
         args:
@@ -644,8 +656,12 @@ send_failure_alert:
 
 
 send_drift_alert:
-  params: [project_id, to_email, from_email, decision, pipeline_job]
+  params: [project_id, to_email, from_email, alerts_enabled, decision, pipeline_job]
   steps:
+    - check_alerts_enabled:
+        switch:
+          - condition: ${not alerts_enabled}
+            next: done
     - get_key:
         call: get_sendgrid_key
         args:
