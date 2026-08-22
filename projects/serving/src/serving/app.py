@@ -25,17 +25,18 @@ from serving.storage import download_json
 
 _model = None
 _feature_names: list[str] = []
+_categorical_categories: dict[str, list[str]] | None = None
 _threshold: float = 0.5
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    global _model, _feature_names, _threshold
+    global _model, _feature_names, _categorical_categories, _threshold
     artifact_uri = settings.aip_storage_uri.rstrip("/")
     _model = load_model(artifact_uri, project_id=settings.project_id)
-    _feature_names = download_json(f"{artifact_uri}/metadata.json", project_id=settings.project_id)[
-        "feature_names"
-    ]
+    metadata = download_json(f"{artifact_uri}/metadata.json", project_id=settings.project_id)
+    _feature_names = metadata["feature_names"]
+    _categorical_categories = metadata.get("categorical_categories")
     _threshold = settings.threshold
     yield
 
@@ -54,7 +55,7 @@ async def predict(request: Request) -> JSONResponse:
     """Score a batch of instances and return churn probabilities with thresholded labels."""
     body = await request.json()
     df = pd.DataFrame(body["instances"])
-    X = select_inference_features(df, _feature_names)
+    X = select_inference_features(df, _feature_names, _categorical_categories)
     proba = _model.predict_proba(X)[:, 1]
     predictions = [
         {CHURN_PROBABILITY_FIELD: float(p), CHURN_PREDICTION_FIELD: bool(p >= _threshold)}

@@ -5,6 +5,7 @@ import pytest
 from ml_common.preprocess import (
     CATEGORICAL_COLS,
     TARGET_COL,
+    categorical_categories,
     feature_names,
     prepare_features,
     select_inference_features,
@@ -90,3 +91,48 @@ def test_select_inference_features_fills_nan_when_nullable_column_entirely_absen
     X = select_inference_features(inference_df, names)
     assert list(X.columns) == names
     assert X["avg_transaction_30d"].isna().all()
+
+
+def test_select_inference_features_fills_nan_when_categorical_column_entirely_absent(sample_df):
+    # Same missing-column case as above, but for a categorical: reindex fills float64 NaN,
+    # which must not be cast straight to category dtype (XGBoost rejects a float category
+    # index) — this is the bug behind the reported "floating point dtype" crash.
+    names = feature_names(sample_df)
+    inference_df = sample_df.drop(columns=[TARGET_COL, "region"])
+    X = select_inference_features(inference_df, names)
+    assert X["region"].dtype.name == "category"
+    assert X["region"].cat.categories.dtype == object
+    assert X["region"].isna().all()
+
+
+def test_categorical_categories_snapshots_training_time_levels(sample_df):
+    X, _ = prepare_features(sample_df)
+    cats = categorical_categories(X)
+    assert cats["membership_tier"] == sorted(["friend", "champion", "guardian"])
+    assert set(cats.keys()) == set(CATEGORICAL_COLS)
+
+
+def test_select_inference_features_reuses_frozen_categories(sample_df):
+    # A prediction batch that only spans a subset of training's category levels must still
+    # get training's exact code mapping, not a mapping re-derived from this smaller batch.
+    X, _ = prepare_features(sample_df)
+    names = feature_names(sample_df)
+    frozen = categorical_categories(X)
+
+    inference_df = sample_df.drop(columns=[TARGET_COL]).iloc[[0]]  # only "friend"/"north"/"email"
+    result = select_inference_features(inference_df, names, frozen)
+
+    assert list(result["membership_tier"].cat.categories) == frozen["membership_tier"]
+    assert list(result["region"].cat.categories) == frozen["region"]
+
+
+def test_select_inference_features_unseen_category_becomes_missing(sample_df):
+    X, _ = prepare_features(sample_df)
+    names = feature_names(sample_df)
+    frozen = categorical_categories(X)
+
+    inference_df = sample_df.drop(columns=[TARGET_COL]).copy()
+    inference_df.loc[0, "membership_tier"] = "brand_new_tier"  # unseen at training time
+    result = select_inference_features(inference_df, names, frozen)
+
+    assert pd.isna(result["membership_tier"].iloc[0])

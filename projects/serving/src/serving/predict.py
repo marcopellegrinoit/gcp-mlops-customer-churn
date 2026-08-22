@@ -23,9 +23,14 @@ def load_model(artifact_uri: str, project_id: str) -> xgb.XGBClassifier:
     return model
 
 
-def score(model: xgb.XGBClassifier, df: pd.DataFrame, feature_names: list[str]) -> np.ndarray:
+def score(
+    model: xgb.XGBClassifier,
+    df: pd.DataFrame,
+    feature_names: list[str],
+    categorical_categories: dict[str, list[str]] | None = None,
+) -> np.ndarray:
     """Select the training-time feature set from df and return churn probabilities."""
-    X = select_inference_features(df, feature_names)
+    X = select_inference_features(df, feature_names, categorical_categories)
     return model.predict_proba(X)[:, 1]
 
 

@@ -12,7 +12,7 @@ import xgboost as xgb
 from google.cloud import aiplatform, storage
 from ml_common.config import CHURN_PROBABILITY_FIELD
 from ml_common.drift import compute_baseline_stats
-from ml_common.preprocess import prepare_features
+from ml_common.preprocess import categorical_categories, prepare_features
 from modeling import config as ml_config
 
 from trainer.data import read_split
@@ -116,7 +116,10 @@ def run_train_stage(
     train_scores = pd.DataFrame({CHURN_PROBABILITY_FIELD: model.predict_proba(X)[:, 1]})
     baseline_stats = compute_baseline_stats(X)
     baseline_stats.update(compute_baseline_stats(train_scores))
-    _upload_artifacts(model, feat_names, shap_importance, threshold, baseline_stats, artifact_uri)
+    cat_categories = categorical_categories(X)
+    _upload_artifacts(
+        model, feat_names, shap_importance, threshold, baseline_stats, cat_categories, artifact_uri
+    )
     return artifact_uri
 
 
@@ -126,6 +129,7 @@ def _upload_artifacts(
     shap_importance: dict[str, float],
     threshold: float,
     baseline_stats: dict,
+    cat_categories: dict[str, list[str]],
     artifact_uri: str,
 ) -> None:
     """Save model.ubj and metadata.json to a GCS artifact directory.
@@ -133,7 +137,10 @@ def _upload_artifacts(
     baseline_stats freezes this training run's per-feature distribution, plus the
     training-time churn_probability distribution, so the drift monitor can later
     compare live feature and score traffic against them without needing access to
-    the original training data.
+    the original training data. cat_categories similarly freezes each categorical
+    column's training-time category list, so inference reuses training's exact
+    category->code mapping instead of re-deriving it from whatever a given batch
+    happens to contain (see ml_common.preprocess.select_inference_features).
     """
     bucket_name, prefix = _split_uri(artifact_uri)
     client = storage.Client()
@@ -148,6 +155,7 @@ def _upload_artifacts(
         "shap_importance": shap_importance,
         "threshold": threshold,
         "baseline_stats": baseline_stats,
+        "categorical_categories": cat_categories,
     }
     bucket.blob(f"{prefix}/metadata.json").upload_from_string(
         json.dumps(metadata), content_type="application/json"

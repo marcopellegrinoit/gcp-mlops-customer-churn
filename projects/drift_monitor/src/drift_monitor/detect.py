@@ -41,7 +41,9 @@ def run_drift_check(
 
     metadata = download_json(f"{champion.uri}/metadata.json")
     snapshot_date, df = fetch_latest_snapshot(project_id, bq_features_table)
-    current = select_inference_features(df, metadata["feature_names"])
+    current = select_inference_features(
+        df, metadata["feature_names"], metadata.get("categorical_categories")
+    )
 
     result = evaluate_drift(metadata["baseline_stats"], current, psi_threshold)
     result["champion_model"] = champion.resource_name
