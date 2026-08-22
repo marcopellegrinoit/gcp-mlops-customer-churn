@@ -310,7 +310,7 @@ wheels = [
 
 [[package]]
 name = "dbt-adapters"
-version = "1.24.2"
+version = "1.24.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agate" },
@@ -321,14 +321,14 @@ dependencies = [
     { name = "pytz" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/46/6c/65190ca22dea211471275355c69fd84925d2e1712993c5868352234cb084/dbt_adapters-1.24.2.tar.gz", hash = "sha256:fb27141acdfad1188bcb584e9b9b1976cb9ae718618fcac132660fdaeb9b11a4", size = 143779, upload-time = "2026-05-21T10:36:02.862Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/d4/bea32dd730def5b875a76c05d281d397ed720b9184d936cc4cedac605948/dbt_adapters-1.24.5.tar.gz", hash = "sha256:87de096a0d5b219905f1079b002f13e3447ffb63558f4f3c5b7278670d198acb", size = 146532, upload-time = "2026-07-15T07:18:49.036Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/d5/e1f3d6a1bfa472ea00c3caa76301b73ec0e4f87b32468111ae7d31c16efa/dbt_adapters-1.24.2-py3-none-any.whl", hash = "sha256:f6afcef287165984d6e785bf1661473fdfbb6d2e723eaebd00355df2985124da", size = 176555, upload-time = "2026-05-21T10:36:00.965Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/c0/07f0e315458128c6ef246ba9698dc0f5e9333394ab8844508adac468c617/dbt_adapters-1.24.5-py3-none-any.whl", hash = "sha256:32345118b921160722a13f12c3e369b9d59a0fb8fb9b3297e29d8cd53f973411", size = 177259, upload-time = "2026-07-15T07:18:47.314Z" },
 ]
 
 [[package]]
 name = "dbt-bigquery"
-version = "1.11.1"
+version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dbt-adapters" },
@@ -342,9 +342,9 @@ dependencies = [
     { name = "google-cloud-storage" },
     { name = "nbformat" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/15/8becb292fe176a730c4b92dee22a17048379cc3cbbd06b8d02fde96c5469/dbt_bigquery-1.11.1.tar.gz", hash = "sha256:e0a4b67b6670cf1a23d53cc6701d3d1192ab49ba72b0f4784b16330fdd9b3898", size = 164123, upload-time = "2026-03-03T20:43:34.834Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/43/32/c7328651d7ef71b5458d47a1838f8608e6e874b0497df83b5ecdcb96f68a/dbt_bigquery-1.12.0.tar.gz", hash = "sha256:088373ddd10af352457b484aa979ab2eecbecb13a7c1e3f5df41fd7d4e387800", size = 206770, upload-time = "2026-07-16T15:57:54.127Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ba/e5/2f22192541ed1d1dd01f6df7574fc5d7520d60c5db8fb9db67234fca9ab3/dbt_bigquery-1.11.1-py3-none-any.whl", hash = "sha256:4f53155366b4bcf1a38bbf9247589e3e18812ed2468e56c14676c649782eae5d", size = 103321, upload-time = "2026-03-03T20:43:33.485Z" },
+    { url = "https://files.pythonhosted.org/packages/04/a5/2f8f6af5419e6b066d9e1ca0503f7bd35a889d6e3cd7a164df82f0e2fab9/dbt_bigquery-1.12.0-py3-none-any.whl", hash = "sha256:5fb87abffbd9a175a75cc85e4d1d21c5d63c3d9a7030b293901fa584f8315af4", size = 114053, upload-time = "2026-07-16T15:57:52.618Z" },
 ]
 
 [[package]]
@@ -468,7 +468,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "dbt-bigquery", specifier = ">=1.8.0" }]
+requires-dist = [{ name = "dbt-bigquery", specifier = ">=1.12.0" }]
 
 [[package]]
 name = "deepdiff"

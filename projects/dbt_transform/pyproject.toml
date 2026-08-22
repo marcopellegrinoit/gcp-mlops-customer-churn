@@ -3,5 +3,5 @@ name = "dbt-transform"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "dbt-bigquery>=1.8.0",
+    "dbt-bigquery>=1.12.0",
 ]
