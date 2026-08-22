@@ -122,7 +122,7 @@ main:
         switch:
           - condition: ${batch_predict_job.state == "JOB_STATE_FAILED" or batch_predict_job.state == "JOB_STATE_CANCELLED"}
             next: alert_batch_predict_failure
-        next: run_drift_monitor
+        next: run_sync_predictions
 
     - alert_batch_predict_failure:
         try:
@@ -144,6 +144,47 @@ main:
 
     - raise_batch_predict:
         raise: ${batch_predict_job}
+
+    # Reconciles the batch-predict job's unmanaged, auto-named scratch output table
+    # (bigqueryOutputDataset/bigqueryOutputTable on the job resource) into the clean,
+    # fixed ml.predictions schema — see sync_predictions_to_ml_predictions below.
+    - run_sync_predictions:
+        call: sync_predictions_to_ml_predictions
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          champion_model: ${champion_resp.body.models[0].name}
+          batch_predict_job: ${batch_predict_job}
+        result: sync_predictions_job
+
+    # BigQuery Job resources only populate status.errorResult on failure — same
+    # key-presence check already used for the Cloud Run Job ops above.
+    - check_sync_predictions:
+        switch:
+          - condition: ${"errorResult" in sync_predictions_job.status}
+            next: alert_sync_predictions_failure
+        next: run_drift_monitor
+
+    - alert_sync_predictions_failure:
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            job_name: "sync-predictions"
+            error: ${sync_predictions_job.status.errorResult}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_sync_predictions_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: raise_sync_predictions
+
+    - raise_sync_predictions:
+        raise: ${sync_predictions_job.status.errorResult}
 
     # Drift monitoring scores the latest feature snapshot against the champion's frozen
     # training baseline. Feature-PSI itself is independent of batch prediction's own output;
@@ -320,8 +361,8 @@ poll_operation:
 # Vertex AI custom-container models carry no automatic resourcing, so
 # dedicatedResources is required even for a small daily scoring job.
 # bigqueryDestination must reference a dataset, not a specific table — Vertex
-# creates its own predictions_<timestamp> table under it; reconciling that into
-# the fixed ml.predictions schema is a separate, not-yet-built ETL step.
+# creates its own predictions_<timestamp> table under it; sync_predictions_to_ml_predictions
+# below reconciles that scratch table into the fixed ml.predictions schema.
 submit_batch_predict:
   params: [project_id, region, champion_model]
   steps:
@@ -393,6 +434,109 @@ poll_batch_prediction_job:
         assign:
           - job: ${job_resp.body}
           - state: ${job_resp.body.state}
+        next: check
+
+    - return_result:
+        return: ${job}
+
+
+# Copies the batch-predict job's unmanaged, auto-named scratch output table into the
+# fixed ml.predictions schema via a single BigQuery MERGE, keyed on (customer_id,
+# snapshot_date) — matching the table's clustering key and partition field. Keying the
+# merge this way makes a retried daily run idempotent: a rerun updates rows in place
+# instead of duplicating them, rather than a plain INSERT which would double-count.
+sync_predictions_to_ml_predictions:
+  params: [project_id, region, champion_model, batch_predict_job]
+  steps:
+    - build_scratch_table:
+        assign:
+          - scratch_dataset: ${text.replace_all(batch_predict_job.outputInfo.bigqueryOutputDataset, "bq://", "")}
+          - scratch_table: ${scratch_dataset + "." + batch_predict_job.outputInfo.bigqueryOutputTable}
+
+    # The model's response is nested under a "prediction" struct rather than flattened
+    # to top-level columns for BigQuery-destination batch prediction (same nesting
+    # convention drift_monitor.predictions already relies on for this same kind of job's
+    # BigQuery output). customer_id/snapshot_date are expected to pass through as
+    # top-level columns, echoed from the bigquerySource input table — worth confirming
+    # against a real scratch table before relying on this.
+    - submit_merge:
+        call: http.post
+        args:
+          url: ${"https://bigquery.googleapis.com/bigquery/v2/projects/" + project_id + "/jobs"}
+          auth:
+            type: OAuth2
+          body:
+            jobReference:
+              projectId: ${project_id}
+              location: ${region}
+            configuration:
+              query:
+                useLegacySql: false
+                parameterMode: "NAMED"
+                queryParameters:
+                  - name: "model_version"
+                    parameterType:
+                      type: "STRING"
+                    parameterValue:
+                      value: ${champion_model}
+                query: >
+                  ${"MERGE `" + project_id + ".ml.predictions` T " +
+                  "USING (SELECT customer_id, prediction.churn_probability AS churn_probability, " +
+                  "prediction.churn_prediction AS churn_prediction, snapshot_date " +
+                  "FROM `" + scratch_table + "`) S " +
+                  "ON T.customer_id = S.customer_id AND T.snapshot_date = S.snapshot_date " +
+                  "WHEN MATCHED THEN UPDATE SET churn_probability = S.churn_probability, " +
+                  "churn_prediction = S.churn_prediction, model_version = @model_version, " +
+                  "predicted_at = CURRENT_TIMESTAMP() " +
+                  "WHEN NOT MATCHED THEN INSERT (customer_id, churn_probability, churn_prediction, " +
+                  "model_version, snapshot_date, predicted_at) VALUES (S.customer_id, S.churn_probability, " +
+                  "S.churn_prediction, @model_version, S.snapshot_date, CURRENT_TIMESTAMP())"}
+        result: submit_resp
+
+    - poll:
+        call: poll_bq_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: ${submit_resp.body.jobReference.jobId}
+        result: job
+
+    - return_job:
+        return: ${job}
+
+
+poll_bq_job:
+  params: [project_id, region, job_id]
+  steps:
+    - init:
+        assign:
+          - job: {}
+          - state: ""
+
+    - check:
+        switch:
+          - condition: ${state == "DONE"}
+            next: return_result
+
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: 5
+
+    - get:
+        call: http.get
+        args:
+          url: ${"https://bigquery.googleapis.com/bigquery/v2/projects/" + project_id + "/jobs/" + job_id}
+          auth:
+            type: OAuth2
+          query:
+            location: ${region}
+        result: job_resp
+
+    - update:
+        assign:
+          - job: ${job_resp.body}
+          - state: ${job_resp.body.status.state}
         next: check
 
     - return_result:

@@ -166,6 +166,7 @@ module "cloud_workflow" {
   alert_from_email              = var.alert_from_email
   source_contents               = file("${path.root}/../workflows/${each.key}.yaml")
   service_account_project_roles = try(each.value.service_account_project_roles, [])
+  bq_dataset_roles              = try(each.value.bq_dataset_roles, {})
   gcs_bucket_roles = {
     for name, role in try(each.value.gcs_bucket_roles, {}) :
     module.gcs_bucket[name].bucket_name => role
@@ -176,5 +177,5 @@ module "cloud_workflow" {
     : []
   )
 
-  depends_on = [google_project_service.apis, module.cloud_run_job, module.gcs_bucket, module.vertex_ai_pipeline]
+  depends_on = [google_project_service.apis, module.bq_dataset, module.cloud_run_job, module.gcs_bucket, module.vertex_ai_pipeline]
 }

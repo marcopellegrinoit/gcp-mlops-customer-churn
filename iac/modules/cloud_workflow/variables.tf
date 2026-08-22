@@ -47,6 +47,12 @@ variable "gcs_bucket_roles" {
   default     = {}
 }
 
+variable "bq_dataset_roles" {
+  description = "Map of dataset_id => role to grant the workflow's service account."
+  type        = map(string)
+  default     = {}
+}
+
 variable "act_as_service_account_emails" {
   description = "SA emails this workflow's service account may impersonate (roles/iam.serviceAccountUser), e.g. to submit a PipelineJob under another module's runtime SA."
   type        = list(string)

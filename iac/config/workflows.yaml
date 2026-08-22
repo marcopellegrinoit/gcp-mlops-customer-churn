@@ -7,6 +7,9 @@ workflows:
       - "roles/logging.logWriter"
       - "roles/secretmanager.secretAccessor"
       - "roles/aiplatform.user"
+      - "roles/bigquery.jobUser"
     gcs_bucket_roles:
       pipeline-metadata: "roles/storage.objectViewer"
+    bq_dataset_roles:
+      ml: "roles/bigquery.dataEditor"
     act_as_vertex_pipeline_sa: true

@@ -9,7 +9,8 @@ A single master scheduler initiates the orchestration workflow once per day. The
 1. **Ingestion Execution:** The data simulation task is triggered. The orchestrator polls the underlying execution status, waiting for a deterministic completion signal before advancing.
 2. **Feature Transformation:** Upon ingestion success, the orchestrator invokes the feature engineering container. The SQL compilation and data transformation DAG must execute without errors to update the analytical tables.
 3. **Batch Prediction:** Once feature availability is confirmed and a champion model is registered, the workflow submits a Vertex AI `BatchPredictionJob` against the champion, polling it to completion. If no champion is registered yet (first-ever run), the workflow stops here cleanly — there's nothing to score or monitor yet.
-4. **Drift Monitoring:** `drift-monitor-job` (a Cloud Run Job) compares the latest feature snapshot's distribution against the champion's frozen training-time baseline (PSI per feature) and writes its decision to GCS, which the workflow reads back to decide whether to retrain.
+4. **Prediction Sync:** The `sync_predictions_to_ml_predictions` subworkflow reconciles the batch-predict job's unmanaged, auto-named scratch output table into the clean `ml.predictions` schema via a single BigQuery `MERGE` keyed on `(customer_id, snapshot_date)`, so the daily scoring run is queryable as a stable business-facing table, not just Vertex's own scratch table.
+5. **Drift Monitoring:** `drift-monitor-job` (a Cloud Run Job) compares the latest feature snapshot's distribution against the champion's frozen training-time baseline (PSI per feature) and writes its decision to GCS, which the workflow reads back to decide whether to retrain.
 
 If any stage within the pipeline encounters an unrecoverable exception, the orchestrator halts downstream blocks, handles error states smoothly, isolates the failure context, and broadcasts immediate alerts to designated monitoring integrations.
 
@@ -33,8 +34,11 @@ flowchart TD
     B -->|success| C["Task C: Batch Predict<br/>(Vertex AI Service Calls)"]
     B -->|failure| ALERT_B[["Alert (Email via SendGrid)"]]
 
-    C -->|success| D["Task D: Drift Monitor<br/>(drift-monitor-job, Cloud Run Job)"]
+    C -->|success| SYNC["Task C.5: Sync Predictions<br/>(BigQuery MERGE into ml.predictions)"]
     C -->|failure| ALERT_C[["Alert (Email via SendGrid)"]]
+
+    SYNC -->|success| D["Task D: Drift Monitor<br/>(drift-monitor-job, Cloud Run Job)"]
+    SYNC -->|failure| ALERT_SYNC[["Alert (Email via SendGrid)"]]
 
     D -->|"writes decision to<br/>gs://&lt;project&gt;-pipeline-metadata/drift/latest.json"| READ[Workflow reads decision JSON]
     READ --> DRIFT{Drift?}

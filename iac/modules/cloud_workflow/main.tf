@@ -20,6 +20,15 @@ resource "google_storage_bucket_iam_member" "this" {
   member = "serviceAccount:${google_service_account.workflow.email}"
 }
 
+resource "google_bigquery_dataset_iam_member" "this" {
+  for_each = var.bq_dataset_roles
+
+  project    = var.project_id
+  dataset_id = each.key
+  role       = each.value
+  member     = "serviceAccount:${google_service_account.workflow.email}"
+}
+
 resource "google_service_account_iam_member" "act_as" {
   for_each = toset(var.act_as_service_account_emails)
 
