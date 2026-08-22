@@ -172,24 +172,6 @@ TPE sidesteps these limitations by modelling the parameter space as two density 
 
 TPE is the practical optimum for HPO budgets in the 50–200 trial range with mixed continuous/categorical search spaces, which is exactly the regime this pipeline operates in.
 
-### When an ML surrogate model does make sense
-
-The pool-and-rank pattern from Lamperti et al. (2018) is a case where an ML surrogate genuinely wins over sequential Bayesian optimization. The idea: use quasi-random Sobol sampling to pre-generate a large pool of candidates (e.g. 100,000), run the expensive function on a small training subset (e.g. 20–50 points), train XGBoost on those observations, then let XGBoost rank the entire pool cheaply in one pass. The best-ranked candidate is returned without ever running the expensive function on the full pool.
-
-This works because the task is **ranking a pre-sampled pool**, not **navigating the space step-by-step**. XGBoost trained on 20 points doesn't need to perfectly generalise across the whole space — it only needs to rank candidates well enough to surface a near-optimal one. The Sobol sampling also helps: it covers the space more uniformly than random draws, so the training set is a better representative of the full landscape.
-
-The conditions that make this pattern appropriate are distinct from the HPO regime:
-
-| Condition | Pool-and-rank ML surrogate | Sequential TPE (this project) |
-|---|---|---|
-| Parameter space size | Very large (thousands) | Small (6–20) |
-| Cost per evaluation | Very high (ABM simulation: minutes–hours) | Moderate (model training: seconds–minutes) |
-| Budget constraint | Extremely tight (20–50 evaluations total) | Looser (50–200 trials feasible) |
-| Need for uncertainty | No — one-shot ranking | Yes — guides step-by-step exploration |
-| Space structure | Pre-sampled with Sobol | Explored adaptively |
-
-For calibrating an agent-based model with 20,000+ parameters and ABM simulations costing hours each, the pool-and-rank approach is the right architecture. For tuning 6 XGBoost hyperparameters where 100 trials are affordable, sequential TPE is the right tool.
-
 ### Scaling HPO beyond in-process Optuna
 
 The current `hpo.py` calls `study.optimize()` with the default in-memory `InMemoryStorage` and no `n_jobs` — all trials run sequentially inside a single trainer container. This is correct for the current model: 100 trials × 5-fold CV on a tabular XGBoost classifier finishes in minutes, well inside the pipeline's SLA.
