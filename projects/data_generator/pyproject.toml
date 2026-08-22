@@ -6,7 +6,7 @@ dependencies = [
     # MLE package — stdlib-only Cloud Logging setup, shared by every container entrypoint.
     "obs-common",
     "google-cloud-bigquery>=3.0.0",
-    "numpy>=1.26.0",
+    "numpy>=2.5.2",
 ]
 
 [project.optional-dependencies]
