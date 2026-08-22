@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: raw
+    database: "{{ env_var('BQ_PROJECT_ID') }}"
+    schema: raw
+    tables:
+      - name: activity_cdc
+        description: "Append-only synthetic CDC event log for customer lapse simulation."

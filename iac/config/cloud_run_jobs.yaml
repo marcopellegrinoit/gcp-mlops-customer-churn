@@ -1,0 +1,58 @@
+cloud_run_jobs:
+  dbt-job:
+    description: "dbt feature engineering transformation job"
+    ar_repository: "containers"
+    image_name: "dbt"
+    image_tag: "latest"
+    cpu: "1"
+    memory: "1Gi"
+    timeout: "1200s"
+    max_retries: 1
+    env_vars:
+      BQ_LOCATION: "europe-west1"
+    bq_dataset_roles:
+      raw: "roles/bigquery.dataViewer"
+      features: "roles/bigquery.dataEditor"
+    service_account_project_roles:
+      - "roles/bigquery.jobUser"
+
+  data-gen-job:
+    description: "Synthetic CDC data generation job"
+    ar_repository: "containers"
+    image_name: "data-gen"
+    image_tag: "latest"
+    cpu: "1"
+    memory: "512Mi"
+    timeout: "600s"
+    max_retries: 1
+    env_vars:
+      BQ_DATASET_ID: "raw"
+      BQ_TABLE_ID: "activity_cdc"
+    bq_dataset_roles:
+      raw: "roles/bigquery.dataEditor"
+    service_account_project_roles:
+      - "roles/bigquery.jobUser"
+
+  drift-monitor-job:
+    description: "PSI drift check of the latest feature snapshot against the champion's training baseline"
+    ar_repository: "containers"
+    image_name: "drift-monitor"
+    image_tag: "latest"
+    cpu: "1"
+    memory: "512Mi"
+    timeout: "600s"
+    max_retries: 1
+    env_vars:
+      REGION: "europe-west1"
+      BQ_FEATURES_TABLE: "features.customer_features"
+      MODEL_DISPLAY_NAME: "churn-predictor"
+      GCS_BUCKET: "pipeline-metadata"
+      DECISION_BLOB: "drift/latest.json"
+    bq_dataset_roles:
+      features: "roles/bigquery.dataViewer"
+    gcs_bucket_roles:
+      pipeline-metadata: "roles/storage.objectAdmin"
+      training-data: "roles/storage.objectViewer"
+    service_account_project_roles:
+      - "roles/bigquery.jobUser"
+      - "roles/aiplatform.user"

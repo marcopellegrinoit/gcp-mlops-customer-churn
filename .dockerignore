@@ -1,0 +1,55 @@
+# Build-context exclusions for the five images built from the repository root
+# (trainer, post-training, serving, drift-monitor, data-gen). Docker reads this file from
+# the context root, so it does not apply to the dbt image — that one builds from
+# projects/dbt_transform/ and carries its own .dockerignore.
+#
+# Every root-context Dockerfile COPYs an explicit allowlist: the workspace manifest, the
+# lockfile, and the pyproject.toml plus src/ of each package it depends on. Nothing listed
+# here is ever copied into an image, so excluding it only cuts the context upload — which
+# is the whole point, since the context is otherwise the entire monorepo.
+
+# Local virtualenvs. The builder stage creates its own from uv.lock; shipping a host-built
+# one would also mix macOS wheels into a Linux image.
+.venv/
+**/.venv/
+
+.git/
+.gitignore
+
+# Python caches and coverage artefacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# Test suites: images copy src/ only, and tests run as their own Cloud Build step.
+**/tests/
+
+# Terraform. .terraform/ vendors provider binaries (hundreds of MB) and local state files
+# can contain secrets — neither belongs anywhere near an image build.
+iac/
+
+# Notebooks commit their rendered outputs deliberately (see docs/feature-exploration.md),
+# which makes them large. They are exploration artefacts and are never deployed.
+notebooks/
+
+# The dbt project builds from its own context; its target/, dbt_packages/ and logs/
+# directories are pure local build output.
+projects/dbt_transform/
+
+# Docs, CI definitions, deploy-time YAML and local tooling state
+docs/
+.cloudbuild/
+.github/
+*.md
+.pre-commit-config.yaml
+.serena/
+.claude/
+scripts/
+workflows/

@@ -1,0 +1,24 @@
+vertex_ai_pipeline:
+  service_account_project_roles:
+    - "roles/aiplatform.user"
+    - "roles/bigquery.jobUser"
+    - "roles/bigquery.readSessionUser"
+    - "roles/artifactregistry.reader"
+  bq_dataset_roles:
+    features: "roles/bigquery.dataViewer"
+    ml: "roles/bigquery.dataEditor"
+    scratch: "roles/bigquery.dataEditor"
+  gcs_bucket_roles:
+    training-data: "roles/storage.objectAdmin"
+    pipeline-metadata: "roles/storage.objectAdmin"
+
+# Dedicated, narrower SA for the champion/challenger Batch Prediction jobs the training
+# pipeline launches: it only ever needs to read model artifacts and test instances from
+# training-data and write predictions back there, not the project-wide roles or
+# pipeline-metadata access the pipeline's own SA above carries. It also reads the
+# per-run scratch table prep_test_batch_data creates as the BigQuery source for those jobs.
+vertex_ai_batch_predict_sa:
+  bq_dataset_roles:
+    scratch: "roles/bigquery.dataViewer"
+  gcs_bucket_roles:
+    training-data: "roles/storage.objectAdmin"

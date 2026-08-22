@@ -1,0 +1,12 @@
+apis:
+  - bigquery.googleapis.com
+  - artifactregistry.googleapis.com
+  - run.googleapis.com
+  - iam.googleapis.com
+  - cloudresourcemanager.googleapis.com
+  - cloudbuild.googleapis.com
+  - secretmanager.googleapis.com
+  - workflows.googleapis.com
+  - cloudscheduler.googleapis.com
+  - aiplatform.googleapis.com
+  - datalineage.googleapis.com

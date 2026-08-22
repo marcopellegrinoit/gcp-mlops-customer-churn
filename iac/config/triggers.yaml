@@ -1,0 +1,75 @@
+triggers:
+  data-gen-trigger:
+    description: "Build and deploy data generator container"
+    filename: ".cloudbuild/data-gen.cloudbuild.yaml"
+    branch: "^main$"
+    included_files:
+      - "projects/obs-common/**"
+      - "projects/data_generator/**"
+      - "pyproject.toml"
+      - "uv.lock"
+
+  dbt-trigger:
+    description: "Build and deploy dbt transformation container"
+    filename: ".cloudbuild/dbt.cloudbuild.yaml"
+    branch: "^main$"
+    included_files:
+      - "projects/dbt_transform/**"
+
+  workflow-trigger:
+    description: "Deploy Cloud Workflows orchestrator definition"
+    filename: ".cloudbuild/workflow.cloudbuild.yaml"
+    branch: "^main$"
+    included_files:
+      - "workflows/**"
+
+  trainer-trigger:
+    description: "Build and push the trainer container"
+    filename: ".cloudbuild/trainer.cloudbuild.yaml"
+    branch: "^main$"
+    included_files:
+      - "projects/obs-common/**"
+      - "projects/ml-common/**"
+      - "projects/modeling/**"
+      - "projects/trainer/**"
+      - "pyproject.toml"
+      - "uv.lock"
+
+  serving-trigger:
+    description: "Build and push the serving container"
+    filename: ".cloudbuild/serving.cloudbuild.yaml"
+    branch: "^main$"
+    included_files:
+      - "projects/ml-common/**"
+      - "projects/serving/**"
+      - "pyproject.toml"
+      - "uv.lock"
+
+  post-training-trigger:
+    description: "Build and push the post-training container"
+    filename: ".cloudbuild/post-training.cloudbuild.yaml"
+    branch: "^main$"
+    included_files:
+      - "projects/obs-common/**"
+      - "projects/ml-common/**"
+      - "projects/post-training/**"
+      - "pyproject.toml"
+      - "uv.lock"
+
+  training-pipeline-trigger:
+    description: "Compile KFP pipeline against the latest trainer and post-training images"
+    filename: ".cloudbuild/training-pipeline.cloudbuild.yaml"
+    branch: "^main$"
+    included_files:
+      - "projects/training-pipeline/**"
+
+  drift-monitor-trigger:
+    description: "Build and deploy the drift monitor container"
+    filename: ".cloudbuild/drift-monitor.cloudbuild.yaml"
+    branch: "^main$"
+    included_files:
+      - "projects/obs-common/**"
+      - "projects/ml-common/**"
+      - "projects/drift-monitor/**"
+      - "pyproject.toml"
+      - "uv.lock"

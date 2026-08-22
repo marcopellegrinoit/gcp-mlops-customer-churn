@@ -1,0 +1,17 @@
+version: 2
+
+models:
+  - name: int_customer_aggregates
+    description: >
+      Per-customer behavioral aggregates computed over 30/60/90-day rolling windows
+      relative to each customer's most recent event. Includes transaction trends,
+      payment health, engagement scores, and activity counts.
+    columns:
+      - name: customer_id
+        tests:
+          - unique
+          - not_null
+      - name: days_since_last_successful_payment
+        description: >
+          Days elapsed since the customer's last successful payment. Set to 9999
+          when no successful payment exists in the history.

@@ -1,0 +1,22 @@
+version: 2
+
+models:
+  - name: stg_activity_cdc
+    description: >
+      Deduplicated, cleaned CDC events. Anomaly-injected rows are excluded.
+      One row per unique event_id, keeping the latest timestamp on duplicates.
+    columns:
+      - name: event_id
+        description: "Unique event identifier."
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: "UUID of the synthetic customer."
+        tests:
+          - not_null
+      - name: event_timestamp
+        tests:
+          - not_null
+      - name: churned
+        description: "Whether this event signals the customer has churned."

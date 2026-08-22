@@ -1,0 +1,455 @@
+# project_id, region and alert_email come from Cloud Scheduler's HTTP body
+# rather than being hardcoded here. This lets the same YAML run in any
+# environment and also allows manual one-off executions with different targets.
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project_id: ${args.project_id}
+          - region: ${args.region}
+          - alert_email: ${args.alert_email}
+          - model_display_name: "churn-predictor"
+
+    - run_data_gen:
+        call: run_crj
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "data-gen-job"
+        result: data_gen_op
+
+    # The Cloud Run LRO proto only includes an "error" key when the job fails;
+    # a completed-successfully operation has no "error" field at all.
+    # Checking key presence is safer than comparing a status string.
+    - check_data_gen:
+        switch:
+          - condition: ${"error" in data_gen_op}
+            next: alert_data_gen_failure
+        next: run_dbt
+
+    - alert_data_gen_failure:
+        call: send_failure_alert
+        args:
+          project_id: ${project_id}
+          to_email: ${alert_email}
+          job_name: "data-gen-job"
+          error: ${data_gen_op.error}
+        result: _
+        next: raise_data_gen
+
+    - raise_data_gen:
+        raise: ${data_gen_op.error}
+
+    # dbt only runs after data-gen succeeds — transforming stale or missing
+    # raw data would silently produce incorrect feature tables.
+    - run_dbt:
+        call: run_crj
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "dbt-job"
+        result: dbt_op
+
+    - check_dbt:
+        switch:
+          - condition: ${"error" in dbt_op}
+            next: alert_dbt_failure
+        next: fetch_champion
+
+    - alert_dbt_failure:
+        call: send_failure_alert
+        args:
+          project_id: ${project_id}
+          to_email: ${alert_email}
+          job_name: "dbt-job"
+          error: ${dbt_op.error}
+        result: _
+        next: raise_dbt
+
+    - raise_dbt:
+        raise: ${dbt_op.error}
+
+    # Batch prediction and drift monitoring both need a registered champion to
+    # score/compare against. On the very first-ever run (no model trained yet)
+    # there's nothing to do downstream of dbt, so finish cleanly here.
+    - fetch_champion:
+        call: http.get
+        args:
+          url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/models"}
+          auth:
+            type: OAuth2
+          query:
+            filter: ${"display_name=\"" + model_display_name + "\" AND labels.role=\"champion\""}
+            orderBy: "create_time desc"
+        result: champion_resp
+
+    - check_champion_exists:
+        switch:
+          - condition: ${"models" in champion_resp.body and len(champion_resp.body.models) > 0}
+            next: run_batch_predict
+        next: done
+
+    - run_batch_predict:
+        call: submit_batch_predict
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          champion_model: ${champion_resp.body.models[0].name}
+        result: batch_predict_job
+
+    - check_batch_predict:
+        switch:
+          - condition: ${batch_predict_job.state == "JOB_STATE_FAILED" or batch_predict_job.state == "JOB_STATE_CANCELLED"}
+            next: alert_batch_predict_failure
+        next: run_drift_monitor
+
+    - alert_batch_predict_failure:
+        call: send_failure_alert
+        args:
+          project_id: ${project_id}
+          to_email: ${alert_email}
+          job_name: "batch-predict-job"
+          error: ${batch_predict_job}
+        result: _
+        next: raise_batch_predict
+
+    - raise_batch_predict:
+        raise: ${batch_predict_job}
+
+    # Drift monitoring scores the latest feature snapshot against the champion's
+    # frozen training baseline — independent of batch prediction's own output —
+    # but runs after it to match the daily DAG's documented step order.
+    - run_drift_monitor:
+        call: run_crj
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "drift-monitor-job"
+        result: drift_monitor_op
+
+    - check_drift_monitor:
+        switch:
+          - condition: ${"error" in drift_monitor_op}
+            next: alert_drift_monitor_failure
+        next: read_drift_decision
+
+    - alert_drift_monitor_failure:
+        call: send_failure_alert
+        args:
+          project_id: ${project_id}
+          to_email: ${alert_email}
+          job_name: "drift-monitor-job"
+          error: ${drift_monitor_op.error}
+        result: _
+        next: raise_drift_monitor
+
+    - raise_drift_monitor:
+        raise: ${drift_monitor_op.error}
+
+    # The drift monitor job writes its decision to GCS rather than returning it
+    # directly — Cloud Run Job executions are fire-and-poll, with no return value
+    # channel back to the caller.
+    - read_drift_decision:
+        call: http.get
+        args:
+          url: ${"https://storage.googleapis.com/storage/v1/b/" + project_id + "-pipeline-metadata/o/drift%2Flatest.json?alt=media"}
+          auth:
+            type: OAuth2
+        result: drift_decision
+
+    - check_drift:
+        switch:
+          - condition: ${drift_decision.body.drift_detected}
+            next: trigger_training
+        next: done
+
+    - trigger_training:
+        call: submit_training_pipeline
+        args:
+          project_id: ${project_id}
+          region: ${region}
+        result: pipeline_job
+
+    - alert_drift_detected:
+        call: send_drift_alert
+        args:
+          project_id: ${project_id}
+          to_email: ${alert_email}
+          decision: ${drift_decision.body}
+          pipeline_job: ${pipeline_job}
+        result: _
+        next: done
+
+    - done:
+        return: "Pipeline completed"
+
+
+# The Cloud Run Jobs v2 API is fully async: POST :run kicks off the execution
+# and immediately returns a google.longrunning.Operation handle — not the result.
+# This subworkflow wraps that into a synchronous call by blocking on poll_operation.
+run_crj:
+  params: [project_id, region, job_name]
+  steps:
+    - trigger:
+        call: http.post
+        args:
+          url: ${"https://run.googleapis.com/v2/projects/" + project_id + "/locations/" + region + "/jobs/" + job_name + ":run"}
+          auth:
+            type: OAuth2
+        result: run_resp
+
+    - poll:
+        call: poll_operation
+        args:
+          op_name: ${run_resp.body.name}
+        result: op
+
+    - return_op:
+        return: ${op}
+
+
+# Cloud Workflows has no built-in LRO waiter and no while loop primitive.
+# The loop is built by jumping back to the "check" label with "next: check" —
+# the switch falls through to sleep/get/update until done flips to true.
+poll_operation:
+  params: [op_name]
+  steps:
+    - init:
+        assign:
+          - op: {}
+          - done: false
+
+    - check:
+        switch:
+          - condition: ${done}
+            next: return_result
+
+    # 15 s balances responsiveness against API quota. Cloud Run jobs typically
+    # complete in 1–10 min, so we won't spin for long even at this interval.
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: 15
+
+    - get:
+        call: http.get
+        args:
+          url: ${"https://run.googleapis.com/v2/" + op_name}
+          auth:
+            type: OAuth2
+        result: op_resp
+
+    - update:
+        assign:
+          - op: ${op_resp.body}
+          - done: ${default(map.get(op_resp.body, "done"), false)}
+        next: check
+
+    - return_result:
+        return: ${op}
+
+
+# Vertex AI custom-container models carry no automatic resourcing, so
+# dedicatedResources is required even for a small daily scoring job.
+# bigqueryDestination must reference a dataset, not a specific table — Vertex
+# creates its own predictions_<timestamp> table under it; reconciling that into
+# the fixed ml.predictions schema is a separate, not-yet-built ETL step.
+submit_batch_predict:
+  params: [project_id, region, champion_model]
+  steps:
+    - submit:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/batchPredictionJobs"}
+          auth:
+            type: OAuth2
+          body:
+            displayName: "daily-churn-scoring"
+            model: ${champion_model}
+            inputConfig:
+              instancesFormat: "bigquery"
+              bigquerySource:
+                inputUri: ${"bq://" + project_id + ".features.customer_features"}
+            outputConfig:
+              predictionsFormat: "bigquery"
+              bigqueryDestination:
+                outputUri: ${"bq://" + project_id + ".ml"}
+            dedicatedResources:
+              machineSpec:
+                machineType: "n1-standard-4"
+              startingReplicaCount: 1
+              maxReplicaCount: 1
+        result: submit_resp
+
+    - poll:
+        call: poll_batch_prediction_job
+        args:
+          region: ${region}
+          job_name: ${submit_resp.body.name}
+        result: job
+
+    - return_job:
+        return: ${job}
+
+
+poll_batch_prediction_job:
+  params: [region, job_name]
+  steps:
+    - init:
+        assign:
+          - job: {}
+          - state: ""
+
+    - check:
+        switch:
+          - condition: ${state == "JOB_STATE_SUCCEEDED" or state == "JOB_STATE_FAILED" or state == "JOB_STATE_CANCELLED"}
+            next: return_result
+
+    # 30 s: batch prediction jobs provision dedicated resources and typically
+    # run for several minutes, so a slower poll than the Cloud Run Job loop
+    # is enough without burning API quota.
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: 30
+
+    - get:
+        call: http.get
+        args:
+          url: ${"https://" + region + "-aiplatform.googleapis.com/v1/" + job_name}
+          auth:
+            type: OAuth2
+        result: job_resp
+
+    - update:
+        assign:
+          - job: ${job_resp.body}
+          - state: ${job_resp.body.state}
+        next: check
+
+    - return_result:
+        return: ${job}
+
+
+# Fire-and-forget: the training pipeline's own champion/challenger gate runs
+# asynchronously and can take much longer than this daily orchestrator should
+# block for, so the workflow submits the PipelineJob and moves on rather than
+# polling it to completion.
+submit_training_pipeline:
+  params: [project_id, region]
+  steps:
+    - build_uris:
+        assign:
+          - training_data_prefix: ${"gs://" + project_id + "-training-data/prod"}
+          - pipeline_root: ${"gs://" + project_id + "-pipeline-metadata/prod"}
+          - template_uri: ${"https://" + region + "-kfp.pkg.dev/" + project_id + "/pipeline-templates/churn-training-pipeline/latest"}
+          - serving_image_uri: ${region + "-docker.pkg.dev/" + project_id + "/containers/serving:latest"}
+          - pipeline_sa: ${"vertex-ai-pipeline-sa@" + project_id + ".iam.gserviceaccount.com"}
+          - batch_predict_sa: ${"vertex-batch-predict-sa@" + project_id + ".iam.gserviceaccount.com"}
+
+    - submit:
+        call: http.post
+        args:
+          url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/pipelineJobs"}
+          auth:
+            type: OAuth2
+          body:
+            displayName: "churn-training-retrain"
+            templateUri: ${template_uri}
+            serviceAccount: ${pipeline_sa}
+            runtimeConfig:
+              gcsOutputDirectory: ${pipeline_root}
+              parameterValues:
+                project_id: ${project_id}
+                artifact_gcs_prefix: ${training_data_prefix + "/artifacts"}
+                batch_test_gcs_prefix: ${training_data_prefix + "/batch-test"}
+                serving_image_uri: ${serving_image_uri}
+                batch_predict_service_account: ${batch_predict_sa}
+        result: submit_resp
+
+    - return_job:
+        return: ${submit_resp.body}
+
+
+# The API key is fetched at execution time, not baked into the workflow.
+# Using "latest" means a rotated key takes effect immediately on the next run
+# without touching or redeploying the workflow definition.
+get_sendgrid_key:
+  params: [project_id]
+  steps:
+    - get_secret:
+        call: http.get
+        args:
+          url: ${"https://secretmanager.googleapis.com/v1/projects/" + project_id + "/secrets/sendgrid-api-key/versions/latest:access"}
+          auth:
+            type: OAuth2
+        result: secret_resp
+
+    # The Secret Manager REST API always base64-encodes payload.data over HTTP.
+    - decode_key:
+        return: ${base64.decode(secret_resp.body.payload.data)}
+
+
+send_failure_alert:
+  params: [project_id, to_email, job_name, error]
+  steps:
+    - get_key:
+        call: get_sendgrid_key
+        args:
+          project_id: ${project_id}
+        result: api_key
+
+    - send_email:
+        call: http.post
+        args:
+          url: "https://api.sendgrid.com/v3/mail/send"
+          headers:
+            Authorization: ${"Bearer " + api_key}
+            Content-Type: "application/json"
+          body:
+            personalizations:
+              - to:
+                  - email: ${to_email}
+            from:
+              email: "noreply@mlops-alerts.com"
+            subject: '${"[MLOps Alert] Pipeline failure: " + job_name}'
+            content:
+              - type: "text/plain"
+                value: '${"Cloud Workflows pipeline failed at job ''" + job_name + "''. Error: " + json.encode_to_string(error)}'
+        result: _
+
+    - done:
+        return: null
+
+
+send_drift_alert:
+  params: [project_id, to_email, decision, pipeline_job]
+  steps:
+    - get_key:
+        call: get_sendgrid_key
+        args:
+          project_id: ${project_id}
+        result: api_key
+
+    - send_email:
+        call: http.post
+        args:
+          url: "https://api.sendgrid.com/v3/mail/send"
+          headers:
+            Authorization: ${"Bearer " + api_key}
+            Content-Type: "application/json"
+          body:
+            personalizations:
+              - to:
+                  - email: ${to_email}
+            from:
+              email: "noreply@mlops-alerts.com"
+            subject: "[MLOps Alert] Data drift detected — retraining triggered"
+            content:
+              - type: "text/plain"
+                value: '${"PSI threshold breached for: " + json.encode_to_string(decision.breached_features) + ". Retraining pipeline submitted: " + pipeline_job.name}'
+        result: _
+
+    - done:
+        return: null

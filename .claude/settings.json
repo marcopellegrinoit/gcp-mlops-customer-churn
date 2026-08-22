@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "arch_content=$(cat README.md docs/setup.md docs/architecture.md docs/data-lifecycle.md docs/orchestration.md docs/ml-infrastructure.md docs/observability.md docs/iac.md docs/cicd.md 2>/dev/null); if [ -n \"$arch_content\" ]; then printf '%s' \"$arch_content\" | jq -Rs '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": (\"ARCHITECTURE GUIDE - Always follow README.md and the docs/ files when building. If your changes introduce new components, patterns, data flows, tools, or directory structure, update the relevant file in docs/ (and README.md if the overview changes too).\\n\\n\" + .)}}'; fi",
+            "statusMessage": "Loading architecture context..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"PostToolUse\", \"additionalContext\": \"ARCHITECTURE REMINDER: Did this change affect the architecture? If you added/changed components, patterns, data flows, tools, or directory structure, update README.md to reflect it.\"}}'"
+          }
+        ]
+      }
+    ]
+  }
+}

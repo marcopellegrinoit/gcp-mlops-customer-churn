@@ -1,0 +1,64 @@
+[tool.uv.workspace]
+members = [
+    "projects/obs-common",
+    "projects/ml-common",
+    "projects/data_generator",
+    "projects/modeling",
+    "projects/trainer",
+    "projects/serving",
+    "projects/post-training",
+    "projects/training-pipeline",
+    "projects/drift-monitor",
+]
+
+[tool.uv]
+# Targets: Linux (Cloud Run / Docker) and macOS arm64 (Apple Silicon dev machines).
+# macOS x86_64 is excluded: shap's numba<0.63 cap there conflicts with numpy>=2.4.
+environments = [
+    "sys_platform == 'linux'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+# numba 0.53.1 (the version shap pulls without a floor) only supports Python <3.10.
+# numba>=0.61 is the first release that supports Python 3.13 (the Docker base image).
+constraint-dependencies = ["numba>=0.61"]
+
+# Ruff config lives only here: no sub-package declares a [tool.ruff] table, so ruff resolves
+# every file in the workspace against this one. Keeps lint/format rules identical across packages.
+[tool.ruff]
+line-length = 100
+# Floor of every package's requires-python, so no rule assumes a syntax the oldest target lacks.
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "F",   # pyflakes — unused imports/variables, undefined names
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "I",   # isort — import ordering
+    "UP",  # pyupgrade — modern syntax for the target version
+    "B",   # flake8-bugbear — likely bugs
+    "SIM", # flake8-simplify
+    "D",   # pydocstyle — enforces the docstring rules in CLAUDE.md
+    "RUF", # ruff-specific
+]
+ignore = [
+    "D203", # incompatible with D211 (blank line before class docstring)
+    "D213", # incompatible with D212 (multi-line summary on the second line)
+]
+# "5000 rows × 21 columns" and "tier × channel" are deliberate typography, not typos for "x".
+allowed-confusables = ["×"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+# Notebooks are linted but never reformatted: cell-level formatting churn produces unreadable
+# diffs for exploratory work. Set here rather than in .pre-commit-config.yaml so a manual
+# `ruff format` behaves identically to the hook.
+exclude = ["notebooks/**"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test names are the documentation; a docstring on every test adds noise, not information.
+"**/tests/**" = ["D1"]
+# Exploratory notebooks: cells are scratch work, not a documented public API.
+"notebooks/**" = ["D", "E501"]

@@ -1,0 +1,67 @@
+# Pre-commit hooks — see docs/cicd.md for how these relate to the Cloud Build pipeline.
+# Install once per clone: uv tool install pre-commit && pre-commit install
+# Hook versions are pinned; bump them with: pre-commit autoupdate
+
+# Generated artefacts and local state never need linting.
+exclude: |
+  (?x)^(
+    (.*/)?uv\.lock
+    |projects/dbt_transform/(target|dbt_packages|logs)/.*
+    |iac/\.terraform/.*
+  )$
+
+repos:
+  # ---------------------------------------------------------------- hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown uses two trailing spaces as a hard line break.
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      # A GCP repo attracts service-account keys and Terraform state; keep both out of history.
+      - id: detect-private-key
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+
+  # ---------------------------------------------------------------- python
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.3
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        types_or: [python, pyi, jupyter]
+      - id: ruff-format
+        # Notebooks are excluded from formatting via [tool.ruff.format] in pyproject.toml,
+        # not here, so a manual `ruff format` behaves the same as this hook.
+        types_or: [python, pyi, jupyter]
+
+  # Keeps uv.lock consistent with every workspace manifest. The Docker builds run
+  # `uv sync --frozen`, which fails outright on a stale lock — catch it before the push.
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.12.5
+    hooks:
+      - id: uv-lock
+
+  # No nbstripout hook here on purpose: the notebooks under notebooks/ commit their outputs
+  # deliberately — the rendered plots and tables are the record of the feature-selection
+  # decisions that docs/feature-exploration.md refers back to. Stripping them would delete
+  # documentation. check-added-large-files is the guard against them growing unbounded.
+
+  # ---------------------------------------------------------------- terraform
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.108.1
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+        args:
+          # Local state backend: validate the config without touching or locking it.
+          - --init-args=-backend=false
+          - --hook-config=--retry-once-with-cleanup=true

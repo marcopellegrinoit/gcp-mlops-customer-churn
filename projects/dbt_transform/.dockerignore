@@ -1,0 +1,20 @@
+# Build-context exclusions for the dbt image, which builds from this directory rather than
+# the repository root (see .cloudbuild/dbt.cloudbuild.yaml) and so needs its own copy of
+# these rules — Docker only reads the .dockerignore at the context root.
+#
+# The image copies pyproject.toml, uv.lock, dbt_project.yml, profiles.yml, models/ and
+# macros/. Everything below is local build output or test scaffolding.
+
+# dbt run artefacts: compiled SQL, the manifest, vendored packages and run logs.
+target/
+dbt_packages/
+logs/
+
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+tests/

@@ -1,0 +1,7 @@
+gcs_buckets:
+  training-data:
+    description: "Train/test Parquet exports and model artifacts produced by the training pipeline"
+    lifecycle_age_days: 30
+  pipeline-metadata:
+    description: "Vertex AI Pipelines root: KFP execution metadata, task I/O, and caching for the training pipeline"
+    lifecycle_age_days: 7

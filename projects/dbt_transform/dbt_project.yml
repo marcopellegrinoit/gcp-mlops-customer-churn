@@ -1,0 +1,21 @@
+name: 'dbt_transform'
+version: '1.0.0'
+config-version: 2
+
+profile: 'dbt_transform'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  dbt_transform:
+    staging:
+      +materialized: ephemeral
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table

@@ -1,0 +1,11 @@
+dbt_transform:
+  target: prod
+  outputs:
+    prod:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('BQ_PROJECT_ID') }}"
+      dataset: features
+      location: "{{ env_var('BQ_LOCATION', 'EU') }}"
+      threads: 4
+      timeout_seconds: 300

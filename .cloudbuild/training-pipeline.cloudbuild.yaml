@@ -1,0 +1,71 @@
+steps:
+  - id: test
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/training-pipeline
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+      - -m
+      - "not integration"
+
+  - id: resolve-digests
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        for name in trainer post-training serving; do
+          digest=$(gcloud artifacts docker images describe \
+            ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/$name:latest \
+            --format='value(image_summary.digest)')
+          echo "${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/$name@$digest" > /workspace/$name.image
+        done
+
+  - id: compile-pipeline
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: bash
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        uv run --frozen --package training-pipeline python -m training_pipeline.pipeline \
+          --trainer-image "$(cat /workspace/trainer.image)" \
+          --post-training-image "$(cat /workspace/post-training.image)" \
+          --serving-image "$(cat /workspace/serving.image)" \
+          --output pipeline.yaml
+
+  - id: stage-pipeline
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --package
+      - training-pipeline
+      - python
+      - -m
+      - training_pipeline.upload
+      - --file
+      - pipeline.yaml
+      - --host
+      - https://${_REGION}-kfp.pkg.dev/$PROJECT_ID/${_PIPELINE_REPO}
+
+substitutions:
+  _REGION: europe-west1
+  _UV_VERSION: "0.11.19"
+  _PYTHON_VERSION: "3.13"
+  _PIPELINE_REPO: pipeline-templates
+
+options:
+  logging: CLOUD_LOGGING_ONLY

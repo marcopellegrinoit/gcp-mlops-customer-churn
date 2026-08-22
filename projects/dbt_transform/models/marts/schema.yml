@@ -1,0 +1,35 @@
+version: 2
+
+models:
+  - name: customer_features
+    description: >
+      ML-ready feature matrix. One row per customer, combining the latest customer
+      state with 30/60/90-day rolling behavioral aggregates. This table is
+      the direct input to Vertex AI training and serving pipelines.
+    columns:
+      - name: customer_id
+        description: "UUID identifying the synthetic customer."
+        tests:
+          - unique
+          - not_null
+      - name: churned
+        description: "Target label: TRUE if the customer's most recent event was a churn signal."
+        tests:
+          - not_null
+      - name: feature_computed_at
+        description: "UTC timestamp of when this feature row was materialized."
+        tests:
+          - not_null
+      - name: membership_tier
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['supporter', 'friend', 'champion', 'guardian']
+      - name: payment_failure_rate_30d
+        description: "Fraction of payment events in the last 30 days that failed. NULL if no events."
+      - name: days_since_last_successful_payment
+        description: "Days since last successful payment. 9999 when no successful payment on record."
+      - name: snapshot_date
+        description: "Date when this feature snapshot was computed. Partition key — one partition per dbt run day."
+        tests:
+          - not_null
