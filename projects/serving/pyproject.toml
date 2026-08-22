@@ -10,7 +10,7 @@ dependencies = [
     "scikit-learn>=1,<2",
     "pandas>=3,<4",
     # Vertex AI custom-container batch-prediction contract
-    "fastapi>=0.110.0,<1",
+    "fastapi>=0.141.1,<1",
     "uvicorn>=0.30.0,<1",
     "pydantic-settings>=2,<3",
     # Infrastructure — GCP client libs track only major versions
