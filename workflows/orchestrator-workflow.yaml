@@ -474,8 +474,9 @@ sync_predictions_to_ml_predictions:
         assign:
           - merge_query_part1: >
               ${"MERGE `" + project_id + ".ml.predictions` T " +
-              "USING (SELECT customer_id, prediction.churn_probability AS churn_probability, " +
-              "prediction.churn_prediction AS churn_prediction, snapshot_date " +
+              "USING (SELECT customer_id, " +
+              "CAST(JSON_VALUE(prediction, '$.churn_probability') AS FLOAT64) AS churn_probability, " +
+              "CAST(JSON_VALUE(prediction, '$.churn_prediction') AS BOOL) AS churn_prediction, snapshot_date " +
               "FROM `" + scratch_table + "`) S " +
               "ON T.customer_id = S.customer_id AND T.snapshot_date = S.snapshot_date "}
           - merge_query_part2: >
@@ -488,12 +489,11 @@ sync_predictions_to_ml_predictions:
               "S.churn_prediction, @model_version, S.snapshot_date, CURRENT_TIMESTAMP())"}
           - merge_query: ${merge_query_part1 + merge_query_part2 + merge_query_part3}
 
-    # The model's response is nested under a "prediction" struct rather than flattened
-    # to top-level columns for BigQuery-destination batch prediction (same nesting
-    # convention drift_monitor.predictions already relies on for this same kind of job's
-    # BigQuery output). customer_id/snapshot_date are expected to pass through as
-    # top-level columns, echoed from the bigquerySource input table — worth confirming
-    # against a real scratch table before relying on this.
+    # Confirmed against a real scratch table: for this custom-container model, the model's
+    # response lands in a "prediction" column as a JSON-encoded STRING (the raw predict
+    # response body), not a nested STRUCT — hence JSON_VALUE rather than dot-access above.
+    # customer_id/snapshot_date pass through as top-level columns, echoed from the
+    # bigquerySource input table.
     - submit_merge:
         call: http.post
         args:

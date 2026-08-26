@@ -130,10 +130,10 @@ def test_fetch_latest_predictions_builds_full_table_from_dataset_and_table(monke
     assert "my-proj.ml.predictions_20260822120000" in fake_client.queries[0]
 
 
-def test_fetch_latest_predictions_selects_nested_prediction_struct(monkeypatch):
-    # The model's response is echoed under a "prediction" struct, not a flat top-level column
-    # (confirmed for this same container's GCS-JSONL output in post_training.evaluate) — the
-    # query must qualify the column, not assume it's already flat.
+def test_fetch_latest_predictions_extracts_prediction_from_json_string(monkeypatch):
+    # The model's response lands in the "prediction" column as a JSON-encoded STRING, not a
+    # nested STRUCT (confirmed against a real BatchPredictionJob's BigQuery output) — the
+    # query must extract it with JSON_VALUE rather than assume dot-access works.
     job = _FakeJob(
         _DISPLAY_NAME,
         JobState.JOB_STATE_SUCCEEDED,
@@ -150,4 +150,4 @@ def test_fetch_latest_predictions_selects_nested_prediction_struct(monkeypatch):
 
     fetch_latest_predictions("proj", _CHAMPION, _DISPLAY_NAME)
 
-    assert "prediction.churn_probability" in fake_client.queries[0]
+    assert "JSON_VALUE(prediction, '$.churn_probability')" in fake_client.queries[0]

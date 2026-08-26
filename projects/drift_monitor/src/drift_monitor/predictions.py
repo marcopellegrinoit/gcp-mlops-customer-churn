@@ -34,15 +34,13 @@ def fetch_latest_predictions(
     dataset = job.output_info.bigquery_output_dataset.removeprefix("bq://")
     table = job.output_info.bigquery_output_table
 
-    # The model's response is nested under a "prediction" struct rather than flattened to
-    # top-level columns — confirmed for this same custom container's GCS-JSONL batch-predict
-    # output in post_training.evaluate.read_batch_predictions ("record['prediction'][...]",
-    # comment: "confirmed against actual BatchPredictionJob output"). Vertex echoes a custom
-    # container's per-instance response object the same way regardless of output format, so
-    # BigQuery output is expected to nest it under a `prediction` RECORD column too — still
-    # worth confirming against a real job before relying on this (see docs/observability.md).
+    # Confirmed against a real BatchPredictionJob's BigQuery output: for this custom
+    # container, the "prediction" column holds the raw predict response body as a
+    # JSON-encoded STRING, not a nested STRUCT/RECORD — hence JSON_VALUE rather than
+    # dot-access (same fix applied to the orchestrator workflow's MERGE query, which hit
+    # this same "Cannot access field ... on a value with type STRING" error).
     bq = bigquery.Client(project=project_id)
     return bq.query(
-        f"SELECT prediction.{CHURN_PROBABILITY_FIELD} AS {CHURN_PROBABILITY_FIELD} "
-        f"FROM `{dataset}.{table}`"
+        f"SELECT CAST(JSON_VALUE(prediction, '$.{CHURN_PROBABILITY_FIELD}') AS FLOAT64) "
+        f"AS {CHURN_PROBABILITY_FIELD} FROM `{dataset}.{table}`"
     ).to_dataframe()
