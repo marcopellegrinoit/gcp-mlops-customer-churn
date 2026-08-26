@@ -1,4 +1,14 @@
 steps:
+  - id: lint
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        uvx ruff@${_RUFF_VERSION} check projects/training_pipeline
+        uvx ruff@${_RUFF_VERSION} format --check projects/training_pipeline
+
   - id: test
     name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
     entrypoint: uv
@@ -13,6 +23,21 @@ steps:
       - pytest
       - -m
       - "not integration"
+
+  - id: audit
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/training_pipeline
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - --with
+      - pip-audit
+      - pip-audit
 
   - id: resolve-digests
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
@@ -66,6 +91,9 @@ substitutions:
   _UV_VERSION: "0.11.19"
   _PYTHON_VERSION: "3.13"
   _PIPELINE_REPO: pipeline-templates
+  # Pinned to the same rev as the ruff-pre-commit hook in .pre-commit-config.yaml, so a
+  # manual `pre-commit run` and this CI gate never disagree about what's a lint failure.
+  _RUFF_VERSION: "0.16.3"
 
 options:
   logging: CLOUD_LOGGING_ONLY

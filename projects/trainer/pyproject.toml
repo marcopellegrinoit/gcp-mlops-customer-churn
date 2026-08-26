@@ -26,6 +26,7 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
+    "testcontainers>=4.0.0",
     # Notebook-only: plotting and stats for the DS exploration notebooks in notebooks/
     "matplotlib>=3.11.1,<4",
     "scipy>=1.18.0,<2",

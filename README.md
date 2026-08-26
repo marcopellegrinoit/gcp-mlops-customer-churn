@@ -16,7 +16,7 @@ The primary engineering objective of this project is to model an enterprise-read
 * **Experiment Tracking:** Vertex AI Experiments (native SDK)
 * **Orchestration:** Google Cloud Workflows
 * **CI/CD Platform:** Google Cloud Build
-* **Code Quality:** Ruff (lint & format) enforced by pre-commit hooks
+* **Code Quality:** Ruff (lint & format), enforced by pre-commit hooks locally and as a blocking Cloud Build step; `pip-audit` gates every build on known dependency CVEs; integration tests (Testcontainers: BigQuery emulator, fake GCS) run in CI where a component has real emulator-backed coverage
 * **Compute Layer:** Cloud Run Jobs & Vertex AI Training
 * **Infrastructure as Code:** Terraform
 * **Data Generation:** Python (NumPy)

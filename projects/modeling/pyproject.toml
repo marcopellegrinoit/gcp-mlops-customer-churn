@@ -33,6 +33,3 @@ packages = ["src/modeling"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --cov=modeling --cov-report=term-missing"
-markers = [
-    "integration: tests requiring live GCP services (deselect with -m 'not integration')",
-]

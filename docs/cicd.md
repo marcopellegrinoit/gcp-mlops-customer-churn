@@ -7,7 +7,7 @@ flowchart TD
     COMMIT[git commit] --> PRECOMMIT["pre-commit hooks:<br/>ruff, terraform, uv-lock, hygiene"]
     PRECOMMIT --> PUSH["Git Push to 'main'"]
     PUSH --> TRIGGER[Google Cloud Build Trigger]
-    TRIGGER --> S1["Step 1: Workspace Testing<br/>(uv run pytest)"]
+    TRIGGER --> S1["Step 1: Lint, Unit + Integration Tests,<br/>Dependency Audit"]
     S1 --> S2["Step 2: BuildKit Caching &<br/>Container Compilation"]
     S2 --> S3["Step 3: Artifact Registry Push"]
     S3 --> S4["Step 4: KFP Pipeline Compilation<br/>(chained trigger)"]
@@ -51,6 +51,18 @@ pre-commit run --all-files          # full sweep — the state CI expects
 pre-commit run ruff-check --all-files   # a single hook
 git commit --no-verify              # escape hatch; Cloud Build will still run the tests
 ```
+
+---
+
+## Lint, Integration Tests & Dependency Audit
+
+Pre-commit hooks (ruff, terraform, uv-lock) only run locally and are trivially bypassed with `git commit --no-verify` — Cloud Build is the actual, unbypassable gate, so every Python `.cloudbuild/*.yaml` file re-runs the checks that matter as blocking steps, in addition to the unit `test` step:
+
+* **`lint`** runs `uvx ruff@${_RUFF_VERSION} check` and `ruff format --check` against that component's own directory (or directories, for `trainer.cloudbuild.yaml`, which covers `ml_common`, `modeling`, and `trainer` in one step). `_RUFF_VERSION` is a substitution pinned to the same rev as the `ruff-pre-commit` hook in [`.pre-commit-config.yaml`](../.pre-commit-config.yaml), so a local `pre-commit run` and this CI gate never disagree about what counts as a lint failure. `uvx` (not a `pyproject.toml` dev dependency) is used because ruff isn't part of any workspace member's own dependency graph — this mirrors how the pre-commit hook manages its own isolated ruff install.
+* **`integration-test`** runs `pytest -m integration` for the components that have real integration tests: `data_generator`, `serving`, `post_training`, and `trainer`. These spin up real service emulators via [Testcontainers](https://testcontainers.com/) — `ghcr.io/goccy/bigquery-emulator` and `fsouza/fake-gcs-server` — as sibling containers. This works without extra Cloud Build configuration because Cloud Build mounts `/var/run/docker.sock` into every build step by default, so `testcontainers` can talk to the host's Docker daemon the same way the `gcr.io/cloud-builders/docker` build/push steps do.
+
+  **Known emulator limitation:** `ghcr.io/goccy/bigquery-emulator` (verified through v0.8.1, the newest release as of this writing) crashes with an internal WASM panic (`wasm trap: invalid memory address or nil pointer dereference`) on *any* table operation — `tables.insert` or a `CREATE TABLE` DDL query — inside a dataset literally named `ml`. That's not an edge case here: `SPLIT_ASSIGNMENTS_TABLE = "ml.split_assignments"` in [`ml_common/config.py`](../projects/ml_common/src/ml_common/config.py) is the dataset every retraining/evaluation run reads and writes. Real BigQuery has no such restriction — `ml` isn't a reserved dataset name — so this is purely an emulator bug, not a signal to rename the dataset. Practically, it means `post_training.bigquery.read_split`, `post_training.batch_predict.create_batch_source_files`, and `trainer.data.export_snapshot`/`read_split` cannot be integration-tested locally; only their GCS-touching siblings (`post_training.storage`, the GCS half of `trainer.data`) and `serving.storage` have real emulator-backed coverage. The `ml.split_assignments`-touching functions remain covered by unit-level mocks only, the same ceiling that already applies to the Vertex AI Model Registry/Experiments code in `post_training.register`/`fetch_champion` and `trainer.experiment` (no local emulator exists for those either).
+* **`audit`** runs `uv run --frozen --extra dev --with pip-audit pip-audit` (or without `--extra dev` for `dbt_transform`, which has no dev extra) — an ephemeral `pip-audit` install audits the exact synced environment the `test` step just ran in, and fails the build on a known CVE in a resolved dependency. This is deliberately separate from [GitHub Dependabot](https://docs.github.com/en/code-security/dependabot) (configured in [`.github/dependabot.yml`](../.github/dependabot.yml)): Dependabot alerts are a GitHub-side signal, not a Cloud Build gate, and Dependabot's `uv` support currently covers *version updates* to `uv.lock`, not vulnerability *scanning* of it — so `pip-audit` is what actually blocks a build here, while Dependabot alerts remain the mechanism for the proactive `constraint-dependencies` version floors documented in each `pyproject.toml`. GCP's Artifact Registry On-Demand Scanning API (`gcloud artifacts docker images scan`) would add OS-package-level coverage of the final built image, but is metered per image scanned — it's deliberately not enabled here to keep this gate free; revisit if OS-level image scanning becomes a requirement.
 
 ---
 
@@ -112,7 +124,7 @@ A root [`.dockerignore`](../.dockerignore) keeps that context from carrying the 
 
 ## Pipeline Steps
 
-1. **Workspace Isolation Testing:** Cloud Build provisions a secure runner, loads the centralized `uv` caching layer, and validates code integrity. For Python projects this runs `uv run pytest`; for the dbt transformation project it runs `dbt parse` (which validates all SQL model syntax and Jinja references without a database connection). This step ensures that modifications inside any component do not introduce structural regressions before a container is built.
+1. **Workspace Isolation Testing:** Cloud Build provisions a secure runner, loads the centralized `uv` caching layer, and validates code integrity. For Python projects this runs `uv run pytest`; for the dbt transformation project it runs `dbt parse` (which validates all SQL model syntax and Jinja references without a database connection). This step ensures that modifications inside any component do not introduce structural regressions before a container is built. Every Python `.cloudbuild/*.yaml` file also runs a `lint` step and an `audit` step ahead of (or alongside) `test` — see **Lint, Integration Tests & Dependency Audit** below — so a build fails fast on a formatting issue, a known CVE, or a real test regression before any Docker layer is built.
 
 2. **High-Performance Container Compilation:** When changes are merged into the `main` branch, Cloud Build isolates the build boundary. Utilizing native Docker BuildKit cache mounts, the engine reuses pre-compiled layers for workspace environments. It packages the isolated requirements for the custom training and serving runtime environments, outputting lean, deterministic, production-ready images.
 

@@ -14,6 +14,19 @@ steps:
       - --profiles-dir
       - .
 
+  - id: audit
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/dbt_transform
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --with
+      - pip-audit
+      - pip-audit
+
   - id: build
     name: gcr.io/cloud-builders/docker
     env:

@@ -55,16 +55,16 @@ def bq_client():
     and cleaned up in the finally block.
     """
     container = (
-        DockerContainer("ghcr.io/goccy/bigquery-emulator:0.6.4")
+        DockerContainer("ghcr.io/goccy/bigquery-emulator:0.8.1")
         .with_command(f"--project={_PROJECT} --dataset={_DATASET}")
         .with_exposed_ports(9050)
     )
     with container:
-        wait_for_logs(container, "REST server started", timeout=60)
+        wait_for_logs(container, "REST server listening", timeout=60)
         host = container.get_container_host_ip()
         port = container.get_exposed_port(9050)
 
-        os.environ["BIGQUERY_EMULATOR_HOST"] = f"{host}:{port}"
+        os.environ["BIGQUERY_EMULATOR_HOST"] = f"http://{host}:{port}"
         try:
             client = bigquery.Client(project=_PROJECT)
             table_ref = bigquery.Table(f"{_PROJECT}.{_DATASET}.{_TABLE}", schema=_SCHEMA)
