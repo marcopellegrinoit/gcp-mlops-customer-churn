@@ -10,8 +10,8 @@ flowchart TD
     TRIGGER --> S1["Step 1: Workspace Testing<br/>(uv run pytest)"]
     S1 --> S2["Step 2: BuildKit Caching &<br/>Container Compilation"]
     S2 --> S3["Step 3: Artifact Registry Push"]
-    S3 --> S4["Step 4: KFP Pipeline Compilation &<br/>Artifact Registry Staging"]
-    S4 --> S5["Step 5: Cloud Run Deployment<br/>(Rolling Update)"]
+    S3 --> S4["Step 4: KFP Pipeline Compilation<br/>(chained trigger)"]
+    S4 --> S5["Step 5: Template Staging &<br/>Activation (KFP Registry)"]
 ```
 
 ## Pre-Commit Hooks
@@ -122,6 +122,6 @@ A root [`.dockerignore`](../.dockerignore) keeps that context from carrying the 
 
    The compile build first runs a `resolve-digests` step that looks up the current digest behind each `trainer:latest`/`post-training:latest`/`serving:latest` tag via `gcloud artifacts docker images describe` and writes `repo@sha256:...` references to the workspace. The `compile-pipeline` step then runs `uv run --package training-pipeline python -m training_pipeline.pipeline` against those pinned digests (not the moving `:latest` tag) to compile the Python-defined KFP graph into a declarative template (`pipeline.yaml`). Pinning to a digest at compile time — rather than letting each pipeline step resolve `:latest` independently at pull time — guarantees every stage of a given pipeline run uses the exact same image, even if someone pushes a new `:latest` mid-run. `training-pipeline` is never containerised — this step runs the package directly in a `uv` build runner.
 
-5. **Continuous Deployment (Rolling Update):** For triggers that deploy a Cloud Run service (`serving-trigger`), Cloud Build invokes the deployment command to propagate the latest image with a rolling update strategy, ensuring zero-downtime deployments and immediate availability of the latest model logic.
+5. **Template Staging & Activation:** The `stage-pipeline` step uploads the compiled `pipeline.yaml` to the `pipeline-templates` Artifact Registry repository (`KFP` format, see [iac.md](iac.md)) via `kfp.registry.RegistryClient`, tagging it `latest`. This gives the template registry versioning and content addressing instead of a flat file, and makes it instantly referenceable for automated execution by Cloud Workflows during scheduled periods or drift-remediation retraining events.
 
-6. **Template Staging & Activation:** The `stage-pipeline` step uploads the compiled `pipeline.yaml` to the `pipeline-templates` Artifact Registry repository (`KFP` format, see [iac.md](iac.md)) via `kfp.registry.RegistryClient`, tagging it `latest`. This gives the template registry versioning and content addressing instead of a flat file, and makes it instantly referenceable for automated execution by Cloud Workflows during scheduled periods or drift-remediation retraining events.
+Cloud Build's job for `serving-trigger` ends at pushing the `serving:latest` image and triggering the pipeline recompile above — there is no Cloud Run (or any) deployment step, because serving isn't a standing service. The serving image only becomes "live" later, at pipeline runtime: the `register_or_reject` post-training stage bakes its registry path into a Vertex AI `Model` resource (`serving_container_image_uri`) when a challenger is promoted, and `orchestrator-workflow` boots that container on demand via a daily `BatchPredictionJob`, not an always-on endpoint. See [ml-infrastructure.md](ml-infrastructure.md#dependency-alignment-between-training-evaluation-and-serving) for how the container is wired into that Model resource.
