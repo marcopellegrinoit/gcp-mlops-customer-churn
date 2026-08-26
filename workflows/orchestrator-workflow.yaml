@@ -130,7 +130,7 @@ main:
         switch:
           - condition: ${batch_predict_job.state == "JOB_STATE_FAILED" or batch_predict_job.state == "JOB_STATE_CANCELLED"}
             next: alert_batch_predict_failure
-          - condition: ${not("successfulCount" in default(map.get(batch_predict_job, "completionStats"), {}))}
+          - condition: ${map.get(batch_predict_job, ["completionStats", "successfulCount"]) == null}
             next: alert_batch_predict_failure
         next: run_sync_predictions
 
