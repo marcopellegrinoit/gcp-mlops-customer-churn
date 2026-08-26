@@ -106,6 +106,7 @@ main:
             filter: ${"display_name=\"" + model_display_name + "\" AND labels.role=\"champion\""}
             orderBy: "create_time desc"
         result: champion_resp
+        retry: ${http.default_retry}
 
     - check_champion_exists:
         switch:
@@ -248,6 +249,7 @@ main:
           auth:
             type: OAuth2
         result: drift_decision
+        retry: ${http.default_retry}
 
     - check_drift:
         switch:
@@ -321,6 +323,7 @@ run_crj:
           auth:
             type: OAuth2
         result: run_resp
+        retry: ${http.default_retry}
 
     - poll:
         call: poll_operation
@@ -362,6 +365,7 @@ poll_operation:
           auth:
             type: OAuth2
         result: op_resp
+        retry: ${http.default_retry}
 
     - update:
         assign:
@@ -404,6 +408,7 @@ submit_batch_predict:
               startingReplicaCount: 1
               maxReplicaCount: 1
         result: submit_resp
+        retry: ${http.default_retry}
 
     - poll:
         call: poll_batch_prediction_job
@@ -444,6 +449,7 @@ poll_batch_prediction_job:
           auth:
             type: OAuth2
         result: job_resp
+        retry: ${http.default_retry}
 
     - update:
         assign:
@@ -516,6 +522,7 @@ sync_predictions_to_ml_predictions:
                       value: ${champion_model}
                 query: ${merge_query}
         result: submit_resp
+        retry: ${http.default_retry}
 
     - poll:
         call: poll_bq_job
@@ -556,6 +563,7 @@ poll_bq_job:
           query:
             location: ${region}
         result: job_resp
+        retry: ${http.default_retry}
 
     - update:
         assign:
@@ -602,6 +610,7 @@ submit_training_pipeline:
                 serving_image_uri: ${serving_image_uri}
                 batch_predict_service_account: ${batch_predict_sa}
         result: submit_resp
+        retry: ${http.default_retry}
 
     - return_job:
         return: ${submit_resp.body}
@@ -620,6 +629,7 @@ get_sendgrid_key:
           auth:
             type: OAuth2
         result: secret_resp
+        retry: ${http.default_retry}
 
     # The Secret Manager REST API always base64-encodes payload.data over HTTP.
     - decode_key:
@@ -657,6 +667,7 @@ send_failure_alert:
               - type: "text/plain"
                 value: '${"Cloud Workflows pipeline failed at job ''" + job_name + "''. Error: " + json.encode_to_string(error)}'
         result: _
+        retry: ${http.default_retry}
 
     - done:
         return: null
@@ -713,6 +724,7 @@ send_drift_alert:
               - type: "text/plain"
                 value: ${body_text}
         result: _
+        retry: ${http.default_retry}
 
     - done:
         return: null
