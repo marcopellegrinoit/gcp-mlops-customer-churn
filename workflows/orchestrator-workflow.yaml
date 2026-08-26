@@ -383,7 +383,7 @@ poll_operation:
 # creates its own predictions_<timestamp> table under it; sync_predictions_to_ml_predictions
 # below reconciles that scratch table into the fixed ml.predictions schema.
 submit_batch_predict:
-  params: [project_id, region, champion_model]
+  params: [project_id, region, champion_model, attempt: 0]
   steps:
     - submit:
         call: http.post
@@ -416,6 +416,33 @@ submit_batch_predict:
           region: ${region}
           job_name: ${submit_resp.body.name}
         result: job
+
+    # The job can reach JOB_STATE_FAILED with a capacity error (same "Machine type
+    # temporarily unavailable" Vertex AI returns for the training pipeline's batch-test
+    # jobs) rather than any http-level failure, so http.default_retry above never sees it.
+    # Resubmit a bounded number of times before giving up so the daily run self-heals
+    # instead of paging on a transient condition.
+    - check_capacity_failure:
+        switch:
+          - condition: ${job.state == "JOB_STATE_FAILED" and text.match_regex(default(map.get(job, ["error", "message"]), ""), "(?i)temporarily unavailable") and attempt < 3}
+            next: backoff
+        next: return_job
+
+    - backoff:
+        call: sys.sleep
+        args:
+          seconds: 60
+        next: resubmit
+
+    - resubmit:
+        call: submit_batch_predict
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          champion_model: ${champion_model}
+          attempt: ${attempt + 1}
+        result: job
+        next: return_job
 
     - return_job:
         return: ${job}

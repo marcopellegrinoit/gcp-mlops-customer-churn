@@ -15,3 +15,9 @@ TRAIN_MEMORY_LIMIT = "8G"
 # Required by Vertex AI for BatchPredictionJob against custom-container models
 # (registered or unmanaged) — unlike AutoML models, no default machine type is inferred.
 BATCH_PREDICT_MACHINE_TYPE = "n1-standard-4"
+
+# BatchPredictionJob can fail with "Machine type temporarily unavailable" when GCP is
+# short on capacity for BATCH_PREDICT_MACHINE_TYPE — a transient condition that clears
+# within minutes, so retrying with backoff is preferable to failing the whole DAG.
+BATCH_PREDICT_RETRY_COUNT = 3
+BATCH_PREDICT_RETRY_BACKOFF_DURATION = "60s"

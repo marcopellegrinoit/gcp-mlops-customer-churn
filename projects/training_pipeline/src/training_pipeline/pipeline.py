@@ -142,18 +142,25 @@ def build_pipeline(trainer_image: str, post_training_image: str, serving_image: 
                 location=region,
             ).set_display_name("get-champion-model")
             # Run the champion's own registered serving container against the test instances.
-            batch_predict_task = ModelBatchPredictOp(
-                job_display_name="champion-test",
-                model=model_get_task.outputs["model"],
-                location=region,
-                instances_format="jsonl",
-                gcs_source_uris=[prep_test_batch_data_task.outputs["gcs_test_uri"]],
-                key_field="customer_id",
-                predictions_format="jsonl",
-                gcs_destination_output_uri_prefix=batch_test_gcs_prefix,
-                machine_type=resources.BATCH_PREDICT_MACHINE_TYPE,
-                service_account=batch_predict_service_account,
-            ).set_display_name("batch-test-champion")
+            batch_predict_task = (
+                ModelBatchPredictOp(
+                    job_display_name="champion-test",
+                    model=model_get_task.outputs["model"],
+                    location=region,
+                    instances_format="jsonl",
+                    gcs_source_uris=[prep_test_batch_data_task.outputs["gcs_test_uri"]],
+                    key_field="customer_id",
+                    predictions_format="jsonl",
+                    gcs_destination_output_uri_prefix=batch_test_gcs_prefix,
+                    machine_type=resources.BATCH_PREDICT_MACHINE_TYPE,
+                    service_account=batch_predict_service_account,
+                )
+                .set_display_name("batch-test-champion")
+                .set_retry(
+                    resources.BATCH_PREDICT_RETRY_COUNT,
+                    backoff_duration=resources.BATCH_PREDICT_RETRY_BACKOFF_DURATION,
+                )
+            )
             # Pull the batch job's output directory out as a plain string for the evaluate step.
             predictions_dir_if = (
                 tasks.extract_uri(artifact=batch_predict_task.outputs["gcs_output_directory"])
@@ -189,18 +196,25 @@ def build_pipeline(trainer_image: str, post_training_image: str, serving_image: 
             threshold=challenger_threshold,
             project_id=project_id,
         ).set_display_name("build-challenger-serving")
-        challenger_batch_predict_task = ModelBatchPredictOp(
-            job_display_name="challenger-test",
-            unmanaged_container_model=build_unmanaged_model_task.outputs["unmanaged_model"],
-            location=region,
-            instances_format="jsonl",
-            gcs_source_uris=[prep_test_batch_data_task.outputs["gcs_test_uri"]],
-            key_field="customer_id",
-            predictions_format="jsonl",
-            gcs_destination_output_uri_prefix=batch_test_gcs_prefix,
-            machine_type=resources.BATCH_PREDICT_MACHINE_TYPE,
-            service_account=batch_predict_service_account,
-        ).set_display_name("batch-test-challenger")
+        challenger_batch_predict_task = (
+            ModelBatchPredictOp(
+                job_display_name="challenger-test",
+                unmanaged_container_model=build_unmanaged_model_task.outputs["unmanaged_model"],
+                location=region,
+                instances_format="jsonl",
+                gcs_source_uris=[prep_test_batch_data_task.outputs["gcs_test_uri"]],
+                key_field="customer_id",
+                predictions_format="jsonl",
+                gcs_destination_output_uri_prefix=batch_test_gcs_prefix,
+                machine_type=resources.BATCH_PREDICT_MACHINE_TYPE,
+                service_account=batch_predict_service_account,
+            )
+            .set_display_name("batch-test-challenger")
+            .set_retry(
+                resources.BATCH_PREDICT_RETRY_COUNT,
+                backoff_duration=resources.BATCH_PREDICT_RETRY_BACKOFF_DURATION,
+            )
+        )
         challenger_predictions_dir = (
             tasks.extract_uri(
                 artifact=challenger_batch_predict_task.outputs["gcs_output_directory"]
