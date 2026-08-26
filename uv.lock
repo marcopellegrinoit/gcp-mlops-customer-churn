@@ -500,6 +500,7 @@ name = "drift-monitor"
 version = "0.1.0"
 source = { editable = "projects/drift_monitor" }
 dependencies = [
+    { name = "db-dtypes", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-aiplatform", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-bigquery", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-storage", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -516,6 +517,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "db-dtypes", specifier = ">=1.7.1,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
     { name = "google-cloud-storage", specifier = ">=3.0.0,<4" },
