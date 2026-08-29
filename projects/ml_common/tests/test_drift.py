@@ -79,3 +79,11 @@ def test_evaluate_drift_ignores_columns_missing_from_current(baseline_df):
     partial = baseline_df.drop(columns=["membership_tier"])
     result = evaluate_drift(stats, partial, psi_threshold=0.2)
     assert "membership_tier" not in result["feature_psi"]
+
+
+def test_psi_numeric_handles_constant_baseline_column():
+    constant_df = pd.DataFrame({"is_trial_account": [0.0] * 1000})
+    stats = compute_baseline_stats(constant_df)
+    assert stats["is_trial_account"]["bin_edges"] == [-np.inf, np.inf]
+    scores = compute_psi(stats, constant_df)
+    assert scores["is_trial_account"] == 0.0

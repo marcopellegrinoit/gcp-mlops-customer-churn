@@ -56,6 +56,11 @@ def _decile_edges(values: pd.Series) -> list[float]:
     """Equal-frequency bin edges so the baseline's own expected proportion per bucket is uniform."""
     quantiles = np.linspace(0, 1, _N_BUCKETS + 1)
     edges = np.unique(np.quantile(values.dropna().astype(float), quantiles))
+    if len(edges) < 2:
+        # A near-constant column collapses every quantile to the same value, leaving no
+        # bucket boundary to speak of — fall back to a single (-inf, inf) bucket rather
+        # than dividing by zero buckets downstream in _psi_numeric.
+        return [-np.inf, np.inf]
     edges[0], edges[-1] = -np.inf, np.inf  # absorb out-of-range values at inference time
     return edges.tolist()
 
