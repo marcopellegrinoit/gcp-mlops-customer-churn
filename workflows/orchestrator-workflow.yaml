@@ -97,15 +97,16 @@ main:
     # score/compare against. On the very first-ever run (no model trained yet)
     # there's nothing to do downstream of dbt, so finish cleanly here.
     - fetch_champion:
-        call: http.get
-        args:
-          url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/models"}
-          auth:
-            type: OAuth2
-          query:
-            filter: ${"display_name=\"" + model_display_name + "\" AND labels.role=\"champion\""}
-            orderBy: "create_time desc"
-        result: champion_resp
+        try:
+          call: http.get
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/models"}
+            auth:
+              type: OAuth2
+            query:
+              filter: ${"display_name=\"" + model_display_name + "\" AND labels.role=\"champion\""}
+              orderBy: "create_time desc"
+          result: champion_resp
         retry: ${http.default_retry}
 
     - check_champion_exists:
@@ -243,12 +244,13 @@ main:
     # directly — Cloud Run Job executions are fire-and-poll, with no return value
     # channel back to the caller.
     - read_drift_decision:
-        call: http.get
-        args:
-          url: ${"https://storage.googleapis.com/storage/v1/b/" + project_id + "-pipeline-metadata/o/drift%2Flatest.json?alt=media"}
-          auth:
-            type: OAuth2
-        result: drift_decision
+        try:
+          call: http.get
+          args:
+            url: ${"https://storage.googleapis.com/storage/v1/b/" + project_id + "-pipeline-metadata/o/drift%2Flatest.json?alt=media"}
+            auth:
+              type: OAuth2
+          result: drift_decision
         retry: ${http.default_retry}
 
     - check_drift:
@@ -317,12 +319,13 @@ run_crj:
   params: [project_id, region, job_name]
   steps:
     - trigger:
-        call: http.post
-        args:
-          url: ${"https://run.googleapis.com/v2/projects/" + project_id + "/locations/" + region + "/jobs/" + job_name + ":run"}
-          auth:
-            type: OAuth2
-        result: run_resp
+        try:
+          call: http.post
+          args:
+            url: ${"https://run.googleapis.com/v2/projects/" + project_id + "/locations/" + region + "/jobs/" + job_name + ":run"}
+            auth:
+              type: OAuth2
+          result: run_resp
         retry: ${http.default_retry}
 
     - poll:
@@ -359,12 +362,13 @@ poll_operation:
           seconds: 15
 
     - get:
-        call: http.get
-        args:
-          url: ${"https://run.googleapis.com/v2/" + op_name}
-          auth:
-            type: OAuth2
-        result: op_resp
+        try:
+          call: http.get
+          args:
+            url: ${"https://run.googleapis.com/v2/" + op_name}
+            auth:
+              type: OAuth2
+          result: op_resp
         retry: ${http.default_retry}
 
     - update:
@@ -386,28 +390,29 @@ submit_batch_predict:
   params: [project_id, region, champion_model, attempt: 0]
   steps:
     - submit:
-        call: http.post
-        args:
-          url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/batchPredictionJobs"}
-          auth:
-            type: OAuth2
-          body:
-            displayName: "daily-churn-scoring"
-            model: ${champion_model}
-            inputConfig:
-              instancesFormat: "bigquery"
-              bigquerySource:
-                inputUri: ${"bq://" + project_id + ".features.customer_features"}
-            outputConfig:
-              predictionsFormat: "bigquery"
-              bigqueryDestination:
-                outputUri: ${"bq://" + project_id + ".ml"}
-            dedicatedResources:
-              machineSpec:
-                machineType: "n1-standard-4"
-              startingReplicaCount: 1
-              maxReplicaCount: 1
-        result: submit_resp
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/batchPredictionJobs"}
+            auth:
+              type: OAuth2
+            body:
+              displayName: "daily-churn-scoring"
+              model: ${champion_model}
+              inputConfig:
+                instancesFormat: "bigquery"
+                bigquerySource:
+                  inputUri: ${"bq://" + project_id + ".features.customer_features"}
+              outputConfig:
+                predictionsFormat: "bigquery"
+                bigqueryDestination:
+                  outputUri: ${"bq://" + project_id + ".ml"}
+              dedicatedResources:
+                machineSpec:
+                  machineType: "n1-standard-4"
+                startingReplicaCount: 1
+                maxReplicaCount: 1
+          result: submit_resp
         retry: ${http.default_retry}
 
     - poll:
@@ -470,12 +475,13 @@ poll_batch_prediction_job:
           seconds: 30
 
     - get:
-        call: http.get
-        args:
-          url: ${"https://" + region + "-aiplatform.googleapis.com/v1/" + job_name}
-          auth:
-            type: OAuth2
-        result: job_resp
+        try:
+          call: http.get
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/" + job_name}
+            auth:
+              type: OAuth2
+          result: job_resp
         retry: ${http.default_retry}
 
     - update:
@@ -528,27 +534,28 @@ sync_predictions_to_ml_predictions:
     # customer_id/snapshot_date pass through as top-level columns, echoed from the
     # bigquerySource input table.
     - submit_merge:
-        call: http.post
-        args:
-          url: ${"https://bigquery.googleapis.com/bigquery/v2/projects/" + project_id + "/jobs"}
-          auth:
-            type: OAuth2
-          body:
-            jobReference:
-              projectId: ${project_id}
-              location: ${region}
-            configuration:
-              query:
-                useLegacySql: false
-                parameterMode: "NAMED"
-                queryParameters:
-                  - name: "model_version"
-                    parameterType:
-                      type: "STRING"
-                    parameterValue:
-                      value: ${champion_model}
-                query: ${merge_query}
-        result: submit_resp
+        try:
+          call: http.post
+          args:
+            url: ${"https://bigquery.googleapis.com/bigquery/v2/projects/" + project_id + "/jobs"}
+            auth:
+              type: OAuth2
+            body:
+              jobReference:
+                projectId: ${project_id}
+                location: ${region}
+              configuration:
+                query:
+                  useLegacySql: false
+                  parameterMode: "NAMED"
+                  queryParameters:
+                    - name: "model_version"
+                      parameterType:
+                        type: "STRING"
+                      parameterValue:
+                        value: ${champion_model}
+                  query: ${merge_query}
+          result: submit_resp
         retry: ${http.default_retry}
 
     - poll:
@@ -582,14 +589,15 @@ poll_bq_job:
           seconds: 5
 
     - get:
-        call: http.get
-        args:
-          url: ${"https://bigquery.googleapis.com/bigquery/v2/projects/" + project_id + "/jobs/" + job_id}
-          auth:
-            type: OAuth2
-          query:
-            location: ${region}
-        result: job_resp
+        try:
+          call: http.get
+          args:
+            url: ${"https://bigquery.googleapis.com/bigquery/v2/projects/" + project_id + "/jobs/" + job_id}
+            auth:
+              type: OAuth2
+            query:
+              location: ${region}
+          result: job_resp
         retry: ${http.default_retry}
 
     - update:
@@ -619,24 +627,25 @@ submit_training_pipeline:
           - batch_predict_sa: ${"vertex-batch-predict-sa@" + project_id + ".iam.gserviceaccount.com"}
 
     - submit:
-        call: http.post
-        args:
-          url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/pipelineJobs"}
-          auth:
-            type: OAuth2
-          body:
-            displayName: "churn-training-retrain"
-            templateUri: ${template_uri}
-            serviceAccount: ${pipeline_sa}
-            runtimeConfig:
-              gcsOutputDirectory: ${pipeline_root}
-              parameterValues:
-                project_id: ${project_id}
-                artifact_gcs_prefix: ${training_data_prefix + "/artifacts"}
-                batch_test_gcs_prefix: ${training_data_prefix + "/batch-test"}
-                serving_image_uri: ${serving_image_uri}
-                batch_predict_service_account: ${batch_predict_sa}
-        result: submit_resp
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/pipelineJobs"}
+            auth:
+              type: OAuth2
+            body:
+              displayName: "churn-training-retrain"
+              templateUri: ${template_uri}
+              serviceAccount: ${pipeline_sa}
+              runtimeConfig:
+                gcsOutputDirectory: ${pipeline_root}
+                parameterValues:
+                  project_id: ${project_id}
+                  artifact_gcs_prefix: ${training_data_prefix + "/artifacts"}
+                  batch_test_gcs_prefix: ${training_data_prefix + "/batch-test"}
+                  serving_image_uri: ${serving_image_uri}
+                  batch_predict_service_account: ${batch_predict_sa}
+          result: submit_resp
         retry: ${http.default_retry}
 
     - return_job:
@@ -650,12 +659,13 @@ get_sendgrid_key:
   params: [project_id]
   steps:
     - get_secret:
-        call: http.get
-        args:
-          url: ${"https://secretmanager.googleapis.com/v1/projects/" + project_id + "/secrets/sendgrid-api-key/versions/latest:access"}
-          auth:
-            type: OAuth2
-        result: secret_resp
+        try:
+          call: http.get
+          args:
+            url: ${"https://secretmanager.googleapis.com/v1/projects/" + project_id + "/secrets/sendgrid-api-key/versions/latest:access"}
+            auth:
+              type: OAuth2
+          result: secret_resp
         retry: ${http.default_retry}
 
     # The Secret Manager REST API always base64-encodes payload.data over HTTP.
@@ -677,23 +687,24 @@ send_failure_alert:
         result: api_key
 
     - send_email:
-        call: http.post
-        args:
-          url: "https://api.sendgrid.com/v3/mail/send"
-          headers:
-            Authorization: ${"Bearer " + api_key}
-            Content-Type: "application/json"
-          body:
-            personalizations:
-              - to:
-                  - email: ${to_email}
-            from:
-              email: ${from_email}
-            subject: '${"[MLOps Alert] Pipeline failure: " + job_name}'
-            content:
-              - type: "text/plain"
-                value: '${"Cloud Workflows pipeline failed at job ''" + job_name + "''. Error: " + json.encode_to_string(error)}'
-        result: _
+        try:
+          call: http.post
+          args:
+            url: "https://api.sendgrid.com/v3/mail/send"
+            headers:
+              Authorization: ${"Bearer " + api_key}
+              Content-Type: "application/json"
+            body:
+              personalizations:
+                - to:
+                    - email: ${to_email}
+              from:
+                email: ${from_email}
+              subject: '${"[MLOps Alert] Pipeline failure: " + job_name}'
+              content:
+                - type: "text/plain"
+                  value: '${"Cloud Workflows pipeline failed at job ''" + job_name + "''. Error: " + json.encode_to_string(error)}'
+          result: _
         retry: ${http.default_retry}
 
     - done:
@@ -734,23 +745,24 @@ send_drift_alert:
         next: send_email
 
     - send_email:
-        call: http.post
-        args:
-          url: "https://api.sendgrid.com/v3/mail/send"
-          headers:
-            Authorization: ${"Bearer " + api_key}
-            Content-Type: "application/json"
-          body:
-            personalizations:
-              - to:
-                  - email: ${to_email}
-            from:
-              email: ${from_email}
-            subject: ${subject}
-            content:
-              - type: "text/plain"
-                value: ${body_text}
-        result: _
+        try:
+          call: http.post
+          args:
+            url: "https://api.sendgrid.com/v3/mail/send"
+            headers:
+              Authorization: ${"Bearer " + api_key}
+              Content-Type: "application/json"
+            body:
+              personalizations:
+                - to:
+                    - email: ${to_email}
+              from:
+                email: ${from_email}
+              subject: ${subject}
+              content:
+                - type: "text/plain"
+                  value: ${body_text}
+          result: _
         retry: ${http.default_retry}
 
     - done:
