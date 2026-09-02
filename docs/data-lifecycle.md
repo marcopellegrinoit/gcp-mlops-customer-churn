@@ -156,6 +156,8 @@ The model joins every event against the customer's `MAX(event_timestamp)`, compu
 
 Produces one row per customer by joining the rolling aggregates with the customer's latest state. The latest state is extracted with `QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_timestamp DESC) = 1`.
 
+`snapshot_date` partitions expire after 90 days (see [iac.md](iac.md#bigquery-tables-bq_table-module)) so the table doesn't grow unbounded from one full customer snapshot being appended every dbt run. This is safe because nothing reads an old partition: `data_split` freezes the exact rows each training run used into `ml.split_assignments`, which never expires (see [ml-infrastructure.md](ml-infrastructure.md)).
+
 #### Full schema
 
 | Column | Type | Description |
@@ -197,7 +199,7 @@ flowchart TD
     SCHED[Cloud Scheduler] -->|triggers on schedule| DG["Cloud Run Job<br/>(data_generator)"]
     DG -->|streams BATCH_SIZE events| RAW[("BigQuery<br/>raw.activity_cdc")]
     RAW -->|triggers Cloud Workflows| DBT["Cloud Run Job<br/>(dbt_transform)"]
-    DBT -->|materializes feature matrix| FEAT[("BigQuery<br/>features.customer_features")]
+    DBT -->|materializes feature matrix| FEAT[("BigQuery<br/>features.customer_features<br/>(90-day partition expiration)")]
 
     FEAT --> TRAIN[Vertex AI Training Pipeline]
     FEAT --> SERVE[Vertex AI Serving Endpoint]

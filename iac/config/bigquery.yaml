@@ -101,6 +101,7 @@ datasets:
         time_partitioning:
           type: DAY
           field: snapshot_date
+          expiration_ms: 7776000000  # 90 days
         clustering_fields:
           - customer_id
 

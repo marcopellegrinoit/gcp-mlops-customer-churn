@@ -47,7 +47,7 @@ time_partitioning:
   expiration_ms: 7776000000  # 90 days
 ```
 
-The `raw.activity_cdc` table has a 90-day partition expiration. Partitions outside this window are deleted by BigQuery on its own maintenance schedule. The `features` dataset has no expiration because its tables are small point-in-time snapshots used for training.
+The `raw.activity_cdc` table and `features.customer_features` both have a 90-day partition expiration. Partitions outside this window are deleted by BigQuery on its own maintenance schedule. This is safe for `customer_features` because nothing ever reads an old `snapshot_date` partition of it: `data_split` freezes the exact rows it used into `ml.split_assignments` (which has no expiration — it's the permanent lineage record, see [ml-infrastructure.md](ml-infrastructure.md)), and `drift-monitor` only ever compares against the latest snapshot.
 
 ## Cloud Run Jobs
 
