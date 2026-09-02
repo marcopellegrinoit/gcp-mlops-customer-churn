@@ -87,3 +87,12 @@ def test_psi_numeric_handles_constant_baseline_column():
     assert stats["is_trial_account"]["bin_edges"] == [-np.inf, np.inf]
     scores = compute_psi(stats, constant_df)
     assert scores["is_trial_account"] == 0.0
+
+
+def test_psi_numeric_handles_stale_single_edge_baseline():
+    # Baselines frozen before the near-constant-column fix can still carry a
+    # single-element bin_edges array (e.g. [inf]) in already-registered model artifacts.
+    stats = {"days_since_last_successful_payment": {"type": "numeric", "bin_edges": [np.inf]}}
+    current = pd.DataFrame({"days_since_last_successful_payment": [0.0] * 1000})
+    scores = compute_psi(stats, current)
+    assert scores["days_since_last_successful_payment"] == 0.0

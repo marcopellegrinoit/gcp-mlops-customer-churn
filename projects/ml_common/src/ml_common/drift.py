@@ -70,6 +70,11 @@ def _category_frequencies(values: pd.Series) -> dict[str, float]:
 
 
 def _psi_numeric(bin_edges: list[float], current: pd.Series) -> float:
+    if len(bin_edges) < 2:
+        # A baseline frozen before the near-constant-column fix (or otherwise degenerate)
+        # can still carry a single-element bin_edges array — fall back to the same
+        # single (-inf, inf) bucket _decile_edges now produces for that case.
+        bin_edges = [-np.inf, np.inf]
     n_buckets = len(bin_edges) - 1
     expected_pct = np.full(n_buckets, 1.0 / n_buckets)
     counts, _ = np.histogram(current.dropna().astype(float), bins=bin_edges)
