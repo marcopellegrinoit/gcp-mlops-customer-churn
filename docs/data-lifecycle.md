@@ -204,6 +204,16 @@ Produces one row per customer by joining the rolling aggregates with the custome
 
 This table is the direct input to the Vertex AI training pipeline and the serving endpoint for real-time inference.
 
+### `customer_features_current`
+
+A second marts model holding only the newest partition of `customer_features`, with the label and build-metadata timestamps removed. It exists because Vertex AI's `bigquerySource` takes a table reference with no row filter, so scoping the daily scoring run to one snapshot has to happen in the transformation layer. Built by the same `dbt build` invocation as the mart, so it can never drift out of step with it. See [ml-infrastructure.md](ml-infrastructure.md) for why the daily job must not score the full mart.
+
+### Contract enforcement
+
+The dbt container's entrypoint is `dbt build`, not `dbt run`. `build` interleaves each model with its declared `schema.yml` tests in DAG order, so a model whose contract is violated fails rather than silently feeding everything downstream. Under `dbt run` those tests were declared but never executed — `customer_features`' grain, `event_id` uniqueness and the `membership_tier` domain were documented guarantees that nothing checked. A failure here halts the orchestrator *before* batch prediction, which is earlier than the drift monitor's data-quality gate can catch the same class of problem (see [observability.md](observability.md)).
+
+`customer_features`' uniqueness test is on `(customer_id, snapshot_date)`, not `customer_id` alone. The single-column test used to pass only because the generator minted a fresh customer pool every run, so no customer ever appeared on two days; with stable identities the same customer legitimately recurs across partitions.
+
 > **Data mart vs. feature store:** `customer_features` is a **data mart** — a denormalized, consumer-ready table scoped to a specific use case (churn prediction). The term describes *how data is shaped and where it lives*, nothing more. A **feature store** is a higher-level MLOps infrastructure component built on top of that kind of storage. It adds: (1) **point-in-time correctness** — serving only features that existed before each label's timestamp to prevent training/serving skew; (2) **online + offline serving** — a low-latency store (e.g. Bigtable or Redis) alongside the offline warehouse table; and (3) **feature versioning and reuse** — a central registry that multiple models and teams share. In a real enterprise scenario the correct solution here is **Vertex AI Feature Store**, which provides all three. The partitioned BigQuery table used here is a pragmatic approximation: it achieves reproducibility by pinning a training job to a specific `snapshot_date` partition, but it requires the caller to enforce point-in-time correctness manually and has no online-serving layer. Feature Store was omitted to keep the infrastructure footprint simple and self-contained.
 
 ---

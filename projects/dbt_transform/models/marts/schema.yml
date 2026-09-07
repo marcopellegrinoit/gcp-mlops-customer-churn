@@ -2,6 +2,14 @@ version: 2
 
 models:
   - name: customer_features
+    tests:
+      # The grain is (customer_id, snapshot_date) — one row per customer per daily snapshot.
+      # customer_id alone used to test as unique only because the generator minted a fresh
+      # customer pool on every run, so no customer ever appeared on two days. Customer
+      # identity is stable now (see data-lifecycle.md), so the same customer legitimately
+      # recurs across partitions and the single-column test asserts something false.
+      - unique:
+          column_name: "concat(customer_id, '|', cast(snapshot_date as string))"
     description: >
       ML-ready feature matrix. One row per customer, combining the latest customer
       state with 30/60/90-day rolling behavioral aggregates. This table is
@@ -10,7 +18,6 @@ models:
       - name: customer_id
         description: "UUID identifying the synthetic customer."
         tests:
-          - unique
           - not_null
       - name: churned
         description: "Target label: TRUE if the customer's most recent event was a churn signal."
@@ -31,5 +38,26 @@ models:
         description: "Days since last successful payment. 9999 when no successful payment on record."
       - name: snapshot_date
         description: "Date when this feature snapshot was computed. Partition key — one partition per dbt run day."
+        tests:
+          - not_null
+
+  - name: customer_features_current
+    description: >
+      The newest partition of customer_features, minus the label and build metadata — the
+      input table for the daily Vertex AI BatchPredictionJob. Exists because bigquerySource
+      accepts a table reference with no row filter, so restricting the daily scoring run to
+      one snapshot has to be expressed upstream. Rebuilt by the same dbt run that builds
+      customer_features.
+    columns:
+      - name: customer_id
+        description: "UUID identifying the synthetic customer."
+        tests:
+          - unique
+          - not_null
+      - name: snapshot_date
+        description: >
+          Feature snapshot being scored. Constant across this table; carried through so the
+          batch job echoes it into its output and sync_predictions_to_ml_predictions can key
+          its MERGE on (customer_id, snapshot_date).
         tests:
           - not_null

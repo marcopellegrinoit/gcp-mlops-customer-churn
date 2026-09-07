@@ -32,4 +32,11 @@ USER appuser
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-ENTRYPOINT ["dbt", "run", "--profiles-dir", ".", "--no-use-colors"]
+# `build`, not `run`: dbt build interleaves models and their declared tests in DAG order, so
+# a model whose contract is violated fails instead of silently feeding everything downstream.
+# The schema.yml tests existed but were never executed under `dbt run` — customer_features'
+# grain, event_id uniqueness and the membership_tier domain were documented guarantees that
+# nothing enforced. A failure here halts the orchestrator before batch prediction rather than
+# after it, which is strictly earlier than the drift monitor's data-quality gate can catch the
+# same class of problem (see docs/observability.md).
+ENTRYPOINT ["dbt", "build", "--profiles-dir", ".", "--no-use-colors"]
