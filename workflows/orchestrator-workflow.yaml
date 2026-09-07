@@ -725,10 +725,17 @@ submit_training_pipeline:
     # time.format renders epoch seconds as RFC 3339 ("2026-09-07T15:30:12Z"); the id
     # charset is [a-z0-9-], so ':' is dropped and 'T'/'Z' are replaced to leave
     # churn-training-retrain-2026-09-07-153012.
+    #
+    # '.' is stripped too, defensively: RFC 3339 permits fractional seconds, and if
+    # time.format ever emits them the '.' would survive into the id, fall outside the
+    # allowed charset and fail the create with 400 — in the retraining path specifically,
+    # which only runs when drift has already been confirmed and is the worst place to
+    # discover a formatting assumption was wrong. Stripping it costs nothing and makes the
+    # id valid under either rendering.
     - build_job_id:
         assign:
           - submitted_at: ${time.format(sys.now())}
-          - stamp: ${text.replace_all(text.replace_all(text.replace_all(submitted_at, ":", ""), "T", "-"), "Z", "")}
+          - stamp: ${text.replace_all(text.replace_all(text.replace_all(text.replace_all(submitted_at, ":", ""), ".", ""), "T", "-"), "Z", "")}
           - job_id: ${"churn-training-retrain-" + stamp}
           - job_name: ${"projects/" + project_id + "/locations/" + region + "/pipelineJobs/" + job_id}
 
