@@ -722,16 +722,15 @@ submit_training_pipeline:
     # matched literally by last_retrain_status to enforce the in-flight and 7-day-interval
     # guards, so making it unique per run would silently stop both from matching anything.
     #
-    # time.format renders epoch seconds as RFC 3339 ("2026-09-07T15:30:12Z"); the id
-    # charset is [a-z0-9-], so ':' is dropped and 'T'/'Z' are replaced to leave
-    # churn-training-retrain-2026-09-07-153012.
+    # time.format renders epoch seconds as RFC 3339 with microsecond precision — verified
+    # against the live API, it returns "2026-09-07T17:37:15.635864Z". The id charset is
+    # [a-z0-9-], so ':' and '.' are dropped and 'T'/'Z' replaced, leaving
+    # churn-training-retrain-2026-09-07-173715635864.
     #
-    # '.' is stripped too, defensively: RFC 3339 permits fractional seconds, and if
-    # time.format ever emits them the '.' would survive into the id, fall outside the
-    # allowed charset and fail the create with 400 — in the retraining path specifically,
-    # which only runs when drift has already been confirmed and is the worst place to
-    # discover a formatting assumption was wrong. Stripping it costs nothing and makes the
-    # id valid under either rendering.
+    # Stripping '.' is required, not cosmetic: leaving it in produces an id containing a
+    # character outside the allowed charset, and the create fails with 400. That would only
+    # surface in the retraining path, which runs solely after drift is already confirmed —
+    # the worst possible place to discover a formatting assumption was wrong.
     - build_job_id:
         assign:
           - submitted_at: ${time.format(sys.now())}
