@@ -256,7 +256,7 @@ main:
     - check_drift:
         switch:
           - condition: ${drift_decision.body.drift_detected}
-            next: trigger_training
+            next: check_retrain_allowed
           - condition: ${default(map.get(drift_decision.body, "score_drift_detected"), false)}
             next: alert_score_drift_only
         next: done
@@ -278,6 +278,46 @@ main:
           as: e
           steps:
             - ignore_score_drift_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: done
+
+    # Drift can persist across many days — a genuine shift the challenger keeps failing to
+    # beat, or an upstream defect no amount of retraining fixes. Submitting unconditionally
+    # then stacks a new PipelineJob every night on top of ones still running (training
+    # outlives this DAG, which is fire-and-forget), burning Vertex quota and racing the
+    # concurrent runs against each other over the same ml.split_assignments partition.
+    - check_retrain_allowed:
+        call: last_retrain_status
+        args:
+          project_id: ${project_id}
+          region: ${region}
+        result: retrain_status
+
+    - decide_retrain:
+        switch:
+          - condition: ${retrain_status.blocked}
+            next: alert_retrain_suppressed
+        next: trigger_training
+
+    # The drift still reaches a human even though nothing was submitted — otherwise a
+    # suppressed night is indistinguishable from a quiet one.
+    - alert_retrain_suppressed:
+        try:
+          call: send_drift_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            decision: ${drift_decision.body}
+            pipeline_job: null
+            suppressed_reason: ${retrain_status.reason}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_retrain_suppressed_alert_error:
                 assign:
                   - alert_send_failed: true
         next: done
@@ -652,6 +692,84 @@ submit_training_pipeline:
         return: ${submit_resp.body}
 
 
+# Whether a retraining PipelineJob may be submitted right now. Returns
+# {blocked: bool, reason: string}. Two independent guards, both needed:
+#
+#   in_flight     — training runs far longer than this DAG waits, so yesterday's job is
+#                   very often still going. Stacking a second one doubles the Vertex spend
+#                   and races it against the first over the same ml.split_assignments
+#                   partition (trainer.data.export_snapshot rewrites it per snapshot_date).
+#   rate_limited  — drift that outlives a retrain (a real shift the challenger can't beat,
+#                   or an upstream defect retraining cannot fix) would otherwise submit a
+#                   fresh job every single night, indefinitely. The floor converts that
+#                   into at most one attempt per interval, and post_training's
+#                   MAX_CONSECUTIVE_REJECTIONS alert is what escalates it to a human.
+last_retrain_status:
+  params: [project_id, region]
+  steps:
+    - init:
+        assign:
+          # 7 days: long enough that a promoted challenger has settled in as champion and
+          # is being measured against its own fresh baseline before the next attempt.
+          - min_retrain_interval_seconds: 604800
+          - retrain_display_name: "churn-training-retrain"
+          - allowed: {"blocked": false, "reason": ""}
+
+    - list_recent:
+        try:
+          call: http.get
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/pipelineJobs"}
+            auth:
+              type: OAuth2
+            query:
+              filter: ${"display_name=\"" + retrain_display_name + "\""}
+              orderBy: "create_time desc"
+              pageSize: 1
+          result: jobs_resp
+        retry: ${http.default_retry}
+
+    # No retraining has ever run — nothing to throttle against.
+    - check_any_exist:
+        switch:
+          - condition: ${len(default(map.get(jobs_resp.body, "pipelineJobs"), [])) == 0}
+            next: allow
+        next: inspect_latest
+
+    - inspect_latest:
+        assign:
+          - latest: ${jobs_resp.body.pipelineJobs[0]}
+          - latest_state: ${default(map.get(latest, "state"), "")}
+          # time.parse converts the RFC 3339 createTime to seconds since the Unix epoch,
+          # the same units sys.now() returns.
+          - age_seconds: ${sys.now() - time.parse(latest.createTime)}
+
+    - check_in_flight:
+        switch:
+          - condition: ${latest_state in ["PIPELINE_STATE_PENDING", "PIPELINE_STATE_QUEUED", "PIPELINE_STATE_RUNNING"]}
+            next: block_in_flight
+        next: check_rate_limit
+
+    - block_in_flight:
+        return:
+          blocked: true
+          reason: ${"a retraining pipeline is still running (" + latest.name + ")"}
+
+    - check_rate_limit:
+        switch:
+          - condition: ${age_seconds < min_retrain_interval_seconds}
+            next: block_rate_limited
+        next: allow
+
+    - block_rate_limited:
+        return:
+          blocked: true
+          reason: ${"last retraining ran " + string(int(age_seconds / 3600)) + "h ago, under the " + string(int(min_retrain_interval_seconds / 86400)) + "-day minimum interval"}
+
+    - allow:
+        return: ${allowed}
+
+
 # The API key is fetched at execution time, not baked into the workflow.
 # Using "latest" means a rotated key takes effect immediately on the next run
 # without touching or redeploying the workflow definition.
@@ -711,8 +829,19 @@ send_failure_alert:
         return: null
 
 
+# suppressed_reason defaults to null so the two call sites that never suppress (feature
+# drift that did submit a job, and the score-only monitoring alert) need not pass it.
 send_drift_alert:
-  params: [project_id, to_email, from_email, alerts_enabled, decision, pipeline_job]
+  params:
+    [
+      project_id,
+      to_email,
+      from_email,
+      alerts_enabled,
+      decision,
+      pipeline_job,
+      suppressed_reason: null,
+    ]
   steps:
     - check_alerts_enabled:
         switch:
@@ -724,18 +853,27 @@ send_drift_alert:
           project_id: ${project_id}
         result: api_key
 
-    # pipeline_job is null for a score-only breach (monitoring-only, no retraining
-    # submitted) — branch the message rather than assuming it's always present.
+    # pipeline_job is null both for a score-only breach (monitoring-only) and for feature
+    # drift whose retraining was suppressed by last_retrain_status — suppressed_reason is
+    # what separates those two, since only the latter has breached features to report.
     - check_retrain_triggered:
         switch:
           - condition: ${pipeline_job != null}
             next: build_retrain_message
+          - condition: ${suppressed_reason != null}
+            next: build_suppressed_message
         next: build_score_only_message
 
     - build_retrain_message:
         assign:
           - subject: "[MLOps Alert] Data drift detected — retraining triggered"
           - body_text: '${"PSI threshold breached for: " + json.encode_to_string(decision.breached_features) + ". Retraining pipeline submitted: " + pipeline_job.name}'
+        next: send_email
+
+    - build_suppressed_message:
+        assign:
+          - subject: "[MLOps Alert] Data drift persists — retraining suppressed"
+          - body_text: '${"PSI threshold breached for: " + json.encode_to_string(decision.breached_features) + ". No retraining was submitted: " + suppressed_reason + ". Drift that outlives a retrain usually means the challenger cannot beat the champion or the shift is upstream of the model — manual review recommended."}'
         next: send_email
 
     - build_score_only_message:

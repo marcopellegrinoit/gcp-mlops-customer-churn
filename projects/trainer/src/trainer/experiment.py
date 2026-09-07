@@ -88,6 +88,12 @@ def run_train_stage(
     """
     df = read_split(train_uri, project_id)
     X, y = prepare_features(df)
+    # Recorded into metadata.json below: it identifies which ml.split_assignments partition
+    # this baseline was frozen from, which is what makes the baseline rebuildable later
+    # without retraining (scripts/rebuild_champion_baseline.py). Every training run writes a
+    # partition, including runs whose challenger was rejected, so "the latest partition" is
+    # not a reliable stand-in for "the partition this champion trained on".
+    training_snapshot_date = json.loads(train_uri)["snapshot_date"]
 
     logging.info("Training final model with params=%s", params)
     model, feat_names, shap_importance = ml_train.train_model(
@@ -118,7 +124,14 @@ def run_train_stage(
     baseline_stats.update(compute_baseline_stats(train_scores))
     cat_categories = categorical_categories(X)
     _upload_artifacts(
-        model, feat_names, shap_importance, threshold, baseline_stats, cat_categories, artifact_uri
+        model,
+        feat_names,
+        shap_importance,
+        threshold,
+        baseline_stats,
+        cat_categories,
+        training_snapshot_date,
+        artifact_uri,
     )
     return artifact_uri
 
@@ -130,6 +143,7 @@ def _upload_artifacts(
     threshold: float,
     baseline_stats: dict,
     cat_categories: dict[str, list[str]],
+    training_snapshot_date: str,
     artifact_uri: str,
 ) -> None:
     """Save model.ubj and metadata.json to a GCS artifact directory.
@@ -156,6 +170,7 @@ def _upload_artifacts(
         "threshold": threshold,
         "baseline_stats": baseline_stats,
         "categorical_categories": cat_categories,
+        "training_snapshot_date": training_snapshot_date,
     }
     bucket.blob(f"{prefix}/metadata.json").upload_from_string(
         json.dumps(metadata), content_type="application/json"

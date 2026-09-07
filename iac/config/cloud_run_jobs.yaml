@@ -52,9 +52,17 @@ cloud_run_jobs:
       # disambiguates the daily production-scoring job from post-training's own evaluation-time
       # batch prediction runs against the same champion model.
       BATCH_PREDICT_DISPLAY_NAME: "daily-churn-scoring"
+      # Persistence rule: a feature must breach in at least PERSISTENCE_MIN_BREACHES of the
+      # last PERSISTENCE_WINDOW runs before retraining is triggered. A single night's breach
+      # is not evidence of a distribution shift, and acting on one is what turns a noisy
+      # detector into a nightly retrain loop.
+      PERSISTENCE_WINDOW: "3"
+      PERSISTENCE_MIN_BREACHES: "2"
     bq_dataset_roles:
       features: "roles/bigquery.dataViewer"
-      ml: "roles/bigquery.dataViewer"
+      # dataEditor, not dataViewer: the job appends each run's per-feature PSI to
+      # ml.drift_metrics, which is the history the persistence rule reads back.
+      ml: "roles/bigquery.dataEditor"
     gcs_bucket_roles:
       pipeline-metadata: "roles/storage.objectAdmin"
       training-data: "roles/storage.objectViewer"

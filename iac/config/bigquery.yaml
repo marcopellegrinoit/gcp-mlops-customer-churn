@@ -244,6 +244,48 @@ datasets:
         clustering_fields:
           - customer_id
 
+      drift_metrics:
+        description: "Per-feature PSI time series, one row per feature per drift-monitor run. Retraining is gated on a feature breaching across consecutive runs rather than a single night, and that persistence rule reads its history from here; it also makes 'has this been breaching for weeks or is it new?' answerable, which the single-file GCS decision (drift/latest.json, overwritten daily) cannot express."
+        friendly_name: "Drift PSI History"
+        schema:
+          - name: run_ts
+            type: TIMESTAMP
+            mode: REQUIRED
+            description: "UTC timestamp of the drift-monitor run that produced this row; identical across every feature of one run, which is what groups them into a run."
+          - name: snapshot_date
+            type: DATE
+            mode: REQUIRED
+            description: "Date of the feature snapshot that was evaluated (partition key)."
+          - name: champion_model
+            type: STRING
+            mode: REQUIRED
+            description: "Vertex AI Model Registry resource name of the champion whose frozen baseline this PSI was measured against. Scopes the persistence rule: a new champion brings a new baseline, so PSI values are not comparable across champions."
+          - name: feature
+            type: STRING
+            mode: REQUIRED
+            description: "Feature column name, or the churn_probability pseudo-feature for score drift."
+          - name: psi
+            type: FLOAT64
+            mode: REQUIRED
+            description: "Population Stability Index of this feature against the champion's frozen baseline."
+          - name: threshold
+            type: FLOAT64
+            mode: REQUIRED
+            description: "Effective threshold applied to this feature this run: the configured floor, or the bootstrapped sampling-noise floor for this snapshot size, whichever is higher."
+          - name: breached
+            type: BOOL
+            mode: REQUIRED
+            description: "Whether psi exceeded threshold in this run. Always false for an unmonitored feature."
+          - name: monitored
+            type: BOOL
+            mode: REQUIRED
+            description: "Whether this feature's baseline carries usable drift signal. False for a single-bucket (constant) column and for legacy baselines frozen without per-bucket proportions — its PSI is reported but never gates retraining."
+        time_partitioning:
+          type: DAY
+          field: snapshot_date
+        clustering_fields:
+          - feature
+
   scratch:
     description: "Ephemeral, self-expiring tables used as scratch space by the training pipeline (e.g. per-run batch-prediction source tables). Not for long-term reference — the dataset's default_table_expiration_ms deletes tables automatically."
     default_table_expiration_ms: 86400000  # 1 day

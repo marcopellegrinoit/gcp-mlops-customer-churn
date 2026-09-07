@@ -33,18 +33,18 @@ def export_snapshot(
 
     snapshot_date_param = bigquery.ScalarQueryParameter("snapshot_date", "DATE", snapshot_date)
 
-    # DELETE+INSERT rather than MERGE: idempotent re-run for the same snapshot_date (e.g. a
-    # retried or drift-triggered retrain) fully replaces that partition's assignment.
-    bq.query(
-        f"DELETE FROM `{full_split_table}` WHERE snapshot_date = @snapshot_date",
-        job_config=bigquery.QueryJobConfig(query_parameters=[snapshot_date_param]),
-    ).result()
-
+    # WRITE_TRUNCATE against the partition decorator (table$YYYYMMDD) rather than DELETE
+    # followed by INSERT. Both give the same replace-this-partition semantics on a re-run,
+    # but this is a single atomic job: two retraining pipelines racing on the same
+    # snapshot_date (drift can trigger one while an earlier one is still running) resolve to
+    # last-writer-wins instead of interleaving a DELETE into the other's INSERT and leaving
+    # the partition half-written. The lineage record this table exists to be is only
+    # trustworthy if it can never be observed partially replaced.
+    #
     # PARTITION BY churned gives an exact stratified split (same class-balance guarantee as
     # sklearn's stratify=), computed once here rather than once per downstream reader.
     bq.query(
         f"""
-        INSERT INTO `{full_split_table}`
         SELECT f.* EXCEPT (feature_computed_at, latest_event_ts),
           IF(PERCENT_RANK() OVER (
                PARTITION BY churned ORDER BY FARM_FINGERPRINT(CAST(customer_id AS STRING))
@@ -57,7 +57,9 @@ def export_snapshot(
             query_parameters=[
                 snapshot_date_param,
                 bigquery.ScalarQueryParameter("train_fraction", "FLOAT64", 1 - TEST_SIZE),
-            ]
+            ],
+            destination=f"{full_split_table}${snapshot_date.replace('-', '')}",
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         ),
     ).result()
 

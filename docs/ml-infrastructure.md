@@ -139,9 +139,7 @@ The screenshot below is the actual compiled DAG as it runs on Vertex AI Pipeline
 The split is now computed entirely in BigQuery and frozen as a permanent partition of **`ml.split_assignments`** — one row per customer per `snapshot_date`, containing the full feature row plus which split (`train`/`test`) it fell into:
 
 ```sql
-DELETE FROM `{project}.ml.split_assignments` WHERE snapshot_date = @snapshot_date;
-
-INSERT INTO `{project}.ml.split_assignments`
+-- destination: ml.split_assignments$YYYYMMDD, write_disposition: WRITE_TRUNCATE
 SELECT f.* EXCEPT (feature_computed_at, latest_event_ts),
   IF(PERCENT_RANK() OVER (PARTITION BY churned ORDER BY FARM_FINGERPRINT(CAST(customer_id AS STRING)))
      < @train_fraction, 'train', 'test') AS split,
@@ -151,6 +149,8 @@ WHERE snapshot_date = @snapshot_date;
 ```
 
 `PARTITION BY churned` gives an exact stratified split — the same class-balance guarantee as sklearn's `stratify=` — computed once per `snapshot_date` rather than once per downstream reader. `hpo`/`train`/`evaluate` then read straight from `ml.split_assignments` via `bigquery.Client().query(...).to_dataframe(create_bqstorage_client=True)`, once per task — there's no pandas load anywhere in `data_split` itself, and no redundant GCS copy of the frozen split.
+
+The write targets the **partition decorator** (`ml.split_assignments$YYYYMMDD`) with `WRITE_TRUNCATE`, rather than a `DELETE` followed by an `INSERT`. Both give the same replace-this-partition semantics on a re-run, but the decorator form is a single atomic job. Two retraining pipelines can overlap — drift can trigger one while an earlier one is still running, since the orchestrator submits training fire-and-forget — and with two statements one run's `DELETE` can land inside the other's `INSERT`, leaving the partition half-written. A lineage record is only worth keeping if it can never be observed partially replaced. (The orchestrator's `last_retrain_status` guard makes that overlap rare; this makes it harmless. See [observability.md](observability.md).)
 
 A few things drove this design, beyond just removing the in-memory load:
 

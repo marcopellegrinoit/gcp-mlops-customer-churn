@@ -22,7 +22,7 @@ def _baseline_df() -> pd.DataFrame:
     return pd.DataFrame({"avg_transaction_30d": rng.normal(50, 10, 500)})
 
 
-def _run(monkeypatch, metadata, feature_df, fetch_predictions=None):
+def _run(monkeypatch, metadata, feature_df, fetch_predictions=None, prior_breaches=None):
     monkeypatch.setattr(detect_module.aiplatform, "init", lambda **kwargs: None)
     monkeypatch.setattr(detect_module, "fetch_champion", lambda model_display_name: _FakeChampion())
     monkeypatch.setattr(detect_module, "download_json", lambda uri: metadata)
@@ -33,6 +33,10 @@ def _run(monkeypatch, metadata, feature_df, fetch_predictions=None):
     )
     if fetch_predictions is not None:
         monkeypatch.setattr(detect_module, "fetch_latest_predictions", fetch_predictions)
+    monkeypatch.setattr(
+        detect_module, "prior_breach_counts", lambda *a, **kw: dict(prior_breaches or {})
+    )
+    monkeypatch.setattr(detect_module, "record_run", lambda *args: None)
     uploaded = {}
     monkeypatch.setattr(
         detect_module, "upload_json", lambda uri, obj: uploaded.update(uri=uri, obj=obj)
@@ -46,6 +50,8 @@ def _run(monkeypatch, metadata, feature_df, fetch_predictions=None):
         decision_gcs_uri="gs://bucket/drift/latest.json",
         psi_threshold=0.2,
         batch_predict_display_name=_DISPLAY_NAME,
+        persistence_window=3,
+        persistence_min_breaches=2,
     )
     return result, uploaded
 
@@ -67,6 +73,8 @@ def test_run_drift_check_returns_no_champion_reason_when_none_registered(monkeyp
         decision_gcs_uri="gs://bucket/drift/latest.json",
         psi_threshold=0.2,
         batch_predict_display_name=_DISPLAY_NAME,
+        persistence_window=3,
+        persistence_min_breaches=2,
     )
 
     assert result == {"drift_detected": False, "reason": "no_champion_registered"}
@@ -100,10 +108,18 @@ def test_run_drift_check_reports_drift_when_distribution_shifts(monkeypatch):
     shifted_df = baseline_df.copy()
     shifted_df["avg_transaction_30d"] = shifted_df["avg_transaction_30d"] + 100
 
-    result, _ = _run(monkeypatch, metadata, shifted_df, fetch_predictions=lambda *a, **kw: None)
+    # Second consecutive breach: the persistence rule is satisfied, so this one retrains.
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted_df,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={"avg_transaction_30d": 1},
+    )
 
     assert result["drift_detected"] is True
     assert "avg_transaction_30d" in result["breached_features"]
+    assert "avg_transaction_30d" in result["persistent_breaches"]
 
 
 def test_run_drift_check_adds_score_psi_without_affecting_drift_detected(monkeypatch):
@@ -267,3 +283,68 @@ def test_run_drift_check_skips_score_check_for_pre_change_artifacts(monkeypatch)
     result, _ = _run(monkeypatch, metadata, baseline_df, fetch_predictions=_should_not_be_called)
 
     assert "score_psi" not in result
+
+
+def test_first_breach_does_not_trigger_retraining(monkeypatch):
+    # The nightly-retrain failure mode: a feature breaching for the first time is recorded
+    # and alerted on, but must not submit a training pipeline until it repeats.
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    shifted_df = baseline_df.copy()
+    shifted_df["avg_transaction_30d"] = shifted_df["avg_transaction_30d"] + 100
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted_df,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={},
+    )
+
+    assert result["run_drift_detected"] is True
+    assert result["drift_detected"] is False
+    assert result["breach_counts"] == {"avg_transaction_30d": 1}
+    assert result["persistent_breaches"] == {}
+
+
+def test_unreadable_history_fails_safe_to_no_retraining(monkeypatch):
+    # An unreadable history table must not fall back to single-run triggering — that is
+    # exactly the behaviour the persistence rule exists to prevent.
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    shifted_df = baseline_df.copy()
+    shifted_df["avg_transaction_30d"] = shifted_df["avg_transaction_30d"] + 100
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("drift_metrics not found")
+
+    monkeypatch.setattr(detect_module, "prior_breach_counts", _boom)
+    result, _ = _run(monkeypatch, metadata, shifted_df, fetch_predictions=lambda *a, **kw: None)
+
+    assert result["run_drift_detected"] is True
+    assert result["drift_detected"] is False
+
+
+def test_history_write_failure_does_not_discard_the_decision(monkeypatch):
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("streaming insert failed")
+
+    monkeypatch.setattr(detect_module, "record_run", _boom)
+    result, uploaded = _run(
+        monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: None
+    )
+
+    assert result["drift_detected"] is False
+    assert uploaded["obj"] == result

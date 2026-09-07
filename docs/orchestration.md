@@ -16,7 +16,13 @@ If any stage within the pipeline encounters an unrecoverable exception, the orch
 
 ## The Retraining Loop
 
-The machine learning training lifecycle operates independently from daily scoring routines. Today retraining is purely drift-triggered: when the drift monitor flags a breach, the orchestrator workflow submits the staged KFP template as a Vertex AI `PipelineJob` directly (no Pub/Sub hop, no separate trigger service) and moves on without waiting for it to finish. A baseline monthly schedule independent of drift is not yet built.
+The machine learning training lifecycle operates independently from daily scoring routines. Today retraining is purely drift-triggered, and a breach has to clear three gates before a `PipelineJob` is submitted:
+
+1. **Calibration** — the feature's PSI must exceed both the configured effect size and the sampling-noise floor for that snapshot's size.
+2. **Persistence** — the breach must repeat (default 2 of the last 3 runs). A single night is not evidence of a distribution shift.
+3. **Rate limiting** — no retraining pipeline may already be in flight, and the last one must be at least 7 days old.
+
+Only then does the orchestrator submit the staged KFP template as a Vertex AI `PipelineJob` directly (no Pub/Sub hop, no separate trigger service) and move on without waiting for it to finish. A breach that clears the first two gates but is blocked by the third still sends an email naming the suppression reason. See [observability.md](observability.md) for the mechanics of each gate. A baseline monthly schedule independent of drift is not yet built.
 
 ---
 
@@ -40,11 +46,16 @@ flowchart TD
     SYNC -->|success| D["Task D: Drift Monitor<br/>(drift-monitor-job, Cloud Run Job)"]
     SYNC -->|failure| ALERT_SYNC[["Alert (Email via SendGrid)"]]
 
-    D -->|"writes decision to<br/>gs://&lt;project&gt;-pipeline-metadata/drift/latest.json"| READ[Workflow reads decision JSON]
-    READ --> DRIFT{Drift?}
+    D -->|"per-feature PSI to ml.drift_metrics;<br/>decision to gs://&lt;project&gt;-pipeline-metadata/drift/latest.json"| READ[Workflow reads decision JSON]
+    READ --> DRIFT{"Persistent drift?<br/>(2 of last 3 runs)"}
 
-    DRIFT -->|drift| TRAIN["Trigger Training<br/>(PipelineJob.create,<br/>fire-and-forget)"]
+    DRIFT -->|drift| GUARD{"Retrain allowed?<br/>(no job in flight,<br/>≥7 days since last)"}
     DRIFT -->|no drift| TERM([Terminate Run])
+
+    GUARD -->|yes| TRAIN["Trigger Training<br/>(PipelineJob.create,<br/>fire-and-forget)"]
+    GUARD -->|no| SUPPRESS[["Email: Drift Persists,<br/>Retraining Suppressed<br/>· Breached features & PSI<br/>· Suppression reason"]]
+
+    SUPPRESS --> TERM
 
     TRAIN --> EMAIL[["Email: Drift Detected<br/>· Breached features & PSI<br/>· Submitted PipelineJob name"]]
 

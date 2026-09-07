@@ -22,6 +22,8 @@ def main() -> None:
         decision_gcs_uri=decision_gcs_uri,
         psi_threshold=platform_config.PSI_THRESHOLD,
         batch_predict_display_name=platform_config.BATCH_PREDICT_DISPLAY_NAME,
+        persistence_window=platform_config.PERSISTENCE_WINDOW,
+        persistence_min_breaches=platform_config.PERSISTENCE_MIN_BREACHES,
     )
     log.info("Drift check result: %s", result)
 
