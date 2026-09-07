@@ -123,7 +123,7 @@ A **mart** (short for data mart) is the final, consumer-ready layer in a dbt pro
 flowchart TD
     RAW[("raw.activity_cdc<br/>BigQuery source (append-only)")]
     STG["models/staging/stg_activity_cdc<br/>[EPHEMERAL]<br/>Deduplication, anomaly filtering, null coalescing"]
-    INT["models/intermediate/int_customer_aggregates<br/>[EPHEMERAL]<br/>Per-customer 30/60/90-day rolling aggregates"]
+    INT["models/intermediate/int_customer_aggregates<br/>[EPHEMERAL]<br/>30/90-day rolling aggregates,<br/>anchored to snapshot_date"]
     MART[("models/marts/customer_features<br/>[INCREMENTAL, insert_overwrite]<br/>→ features.customer_features<br/>One row per customer per snapshot_date partition")]
 
     RAW --> STG
@@ -151,9 +151,13 @@ Cleans the raw CDC log before any aggregation:
 **File:** `models/intermediate/int_customer_aggregates.sql`  
 **Materialization:** ephemeral
 
-Computes per-customer behavioral aggregates. All rolling windows are **relative to each customer's most recent event** (not a fixed wall-clock date), so the features remain meaningful regardless of when the job runs or how old the data is.
+Computes per-customer behavioral aggregates. All rolling windows are **relative to the snapshot date** — `DATE_DIFF(CURRENT_DATE(), DATE(event_timestamp), DAY)` as `days_since_event` — matching the `snapshot_date` that `customer_features` stamps in the same run, so a feature row and its partition key always describe the same day.
 
-The model joins every event against the customer's `MAX(event_timestamp)`, computes `TIMESTAMP_DIFF(..., DAY)` as `days_since_event`, then groups by `customer_id`.
+They were previously anchored to each customer's own `MAX(event_timestamp)`, which is the difference between a feature that measures recency and one that cannot. Under per-customer anchoring, `events_last_30d` meant "events in the 30 days before this customer last did anything": a customer dormant for six weeks and one active this morning described entirely different calendar periods in the same column and were indistinguishable to the model. Every window also necessarily contained the anchor event itself, so `events_last_30d` could never be 0 and dormancy — the strongest churn signal there is — was unrepresentable.
+
+`days_since_last_successful_payment` showed the cost most plainly. Measured from the customer's own last event it was **0 for all 11,193 customers that had a value at all**, while true calendar staleness spanned 16 days; the column whose entire purpose is recency was a constant, which is also why the drift monitor reported it as carrying no usable signal. Anchored to the snapshot date it takes 14 distinct values across 0–16 days.
+
+A consequence worth expecting: windows can now legitimately be empty. `events_last_30d = 0` and a `NULL` `avg_transaction_30d` mean "this customer did nothing in that window", which is information, not a defect. (It reads as 0 dormant customers today only because `raw.activity_cdc` holds ~16 days of events so far — nobody *can* be 30-day dormant until the history is older than the window.)
 
 | Feature group | Columns produced |
 |---|---|
