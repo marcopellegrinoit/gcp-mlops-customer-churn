@@ -474,6 +474,17 @@ submit_batch_predict:
                 instancesFormat: "bigquery"
                 bigquerySource:
                   inputUri: ${"bq://" + project_id + ".features.customer_features"}
+              # REQUIRED, not cosmetic. With a BigQuery source Vertex defaults to sending each
+              # row as a positional JSON *array*, with no column names. The serving container
+              # builds a DataFrame from the instances and reindexes it onto the training-time
+              # feature names (ml_common.preprocess.select_inference_features), so nameless
+              # instances match nothing, every feature becomes NaN, and XGBoost returns its
+              # all-missing constant for every customer — silently, with no row errors.
+              # That is exactly what happened: 244,435 rows scored 0.6214924454689026 apiece.
+              # "object" sends {column_name: value} per row, which is the contract the serving
+              # app and select_inference_features were always written against.
+              instanceConfig:
+                instanceType: "object"
               outputConfig:
                 predictionsFormat: "bigquery"
                 bigqueryDestination:

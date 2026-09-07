@@ -15,9 +15,15 @@ def client(monkeypatch):
     monkeypatch.setenv("AIP_PREDICT_ROUTE", "/predict")
     monkeypatch.setenv("PROJECT_ID", "test-project")
 
-    X = pd.DataFrame({"avg_transaction_30d": [10.0, 50.0, 5.0, 60.0]})
-    y = pd.Series([0, 1, 0, 1])
-    model = xgb.XGBClassifier(n_estimators=5, max_depth=2)
+    # Enough rows to actually split on. Four rows left the trees unable to meet
+    # min_child_weight, so the model returned base_score 0.5 for every input — which would
+    # have made a "predictions must vary" assertion silently untestable, the same class of
+    # blind spot as the constant-prediction defect these tests now cover.
+    low = [float(v) for v in range(0, 100)]
+    high = [float(v) for v in range(100, 200)]
+    X = pd.DataFrame({"avg_transaction_30d": low + high})
+    y = pd.Series([0] * len(low) + [1] * len(high))
+    model = xgb.XGBClassifier(n_estimators=20, max_depth=2)
     model.fit(X, y)
 
     from serving import app as app_module
@@ -50,3 +56,43 @@ def test_predict_returns_one_prediction_per_instance(client):
     for pred in predictions:
         assert 0.0 <= pred[CHURN_PROBABILITY_FIELD] <= 1.0
         assert isinstance(pred[CHURN_PREDICTION_FIELD], bool)
+
+
+def test_positional_array_instances_are_rejected(client):
+    # The production defect: with a BigQuery source and no instanceConfig, Vertex sends each
+    # row as a positional array. Those match no feature name, every feature reindexes to NaN,
+    # and XGBoost returns its all-missing constant for every row — with the job reporting
+    # complete success. This must fail loudly instead.
+    resp = client.post("/predict", json={"instances": [[55.0], [8.0]]})
+    assert resp.status_code == 400
+    assert "instanceType" in resp.json()["detail"]
+
+
+def test_instances_with_unrecognised_keys_are_rejected(client):
+    resp = client.post("/predict", json={"instances": [{"some_other_column": 1.0}]})
+    assert resp.status_code == 400
+
+
+def test_named_instances_produce_varied_predictions(client):
+    # The counterpart assertion: correctly-named instances must not collapse to one value.
+    resp = client.post(
+        "/predict",
+        json={"instances": [{"avg_transaction_30d": 180.0}, {"avg_transaction_30d": 5.0}]},
+    )
+    assert resp.status_code == 200
+    probs = [p[CHURN_PROBABILITY_FIELD] for p in resp.json()["predictions"]]
+    assert probs[0] != probs[1]
+
+
+def test_null_heavy_but_correctly_named_instances_are_accepted(client):
+    # A legitimately null row is valid input and must still be scored — the guard keys on
+    # column names, not on all-NaN values, precisely so this case is not rejected.
+    resp = client.post("/predict", json={"instances": [{"avg_transaction_30d": None}]})
+    assert resp.status_code == 200
+    assert len(resp.json()["predictions"]) == 1
+
+
+def test_empty_instance_list_is_not_rejected(client):
+    resp = client.post("/predict", json={"instances": []})
+    assert resp.status_code == 200
+    assert resp.json()["predictions"] == []

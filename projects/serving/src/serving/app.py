@@ -14,7 +14,7 @@ at serving time.
 from contextlib import asynccontextmanager
 
 import pandas as pd
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from ml_common.config import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
 from ml_common.preprocess import select_inference_features
@@ -44,6 +44,39 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(lifespan=_lifespan)
 
 
+def _reject_unnamed_instances(df: pd.DataFrame) -> None:
+    """Fail the batch when instances carry none of the training-time feature names.
+
+    select_inference_features reindexes onto the frozen feature names, which turns an
+    instance whose keys it does not recognise into an all-NaN row rather than an error —
+    and XGBoost scores all-NaN happily, returning its all-missing constant. That
+    combination is silent by construction: a BatchPredictionJob completes, reports every
+    row successful, writes no errors table, and fills the output with one identical
+    probability. It did, for 244,435 rows a night, until the score-drift check caught it.
+
+    The cause was Vertex sending positional arrays instead of named objects (see
+    instanceConfig in submit_batch_predict), which is now requested explicitly. This guard
+    is the backstop: any future contract drift fails loudly as row errors instead of
+    quietly producing confident, uniform, meaningless predictions.
+
+    Deliberately keyed on column names rather than on all-NaN values — a batch of
+    legitimately null-heavy rows is valid input, whereas instances carrying none of the
+    expected names cannot be.
+    """
+    if df.empty:
+        return
+    if not set(df.columns) & set(_feature_names):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "instances carry none of the model's feature names "
+                f"(got {sorted(str(c) for c in df.columns)[:5]}...); "
+                "expected named fields — check the batch prediction job's "
+                "instanceConfig.instanceType is 'object'"
+            ),
+        )
+
+
 @app.get(settings.aip_health_route)
 def health() -> dict:
     """Report container readiness to Vertex AI's health probe."""
@@ -55,6 +88,7 @@ async def predict(request: Request) -> JSONResponse:
     """Score a batch of instances and return churn probabilities with thresholded labels."""
     body = await request.json()
     df = pd.DataFrame(body["instances"])
+    _reject_unnamed_instances(df)
     X = select_inference_features(df, _feature_names, _categorical_categories)
     proba = _model.predict_proba(X)[:, 1]
     predictions = [
