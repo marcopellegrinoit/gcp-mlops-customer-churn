@@ -23,7 +23,11 @@ The machine learning training lifecycle operates independently from daily scorin
 3. **Data quality** — the snapshot must pass absolute assertions on row volume, key uniqueness, schema, null rates and column variance. A defect moves distributions just as drift does, but retraining on one bakes it into the model, and the promotion gate cannot catch that because the challenger is evaluated against the same bad data.
 4. **Rate limiting** — no retraining pipeline may already be in flight, and the last one must be at least 7 days old.
 
-Only then does the orchestrator submit the staged KFP template as a Vertex AI `PipelineJob` directly (no Pub/Sub hop, no separate trigger service) and move on without waiting for it to finish. A breach that clears the first two gates but is blocked by the third still sends an email naming the suppression reason. See [observability.md](observability.md) for the mechanics of each gate. A baseline monthly schedule independent of drift is not yet built.
+Only then does the orchestrator submit the staged KFP template as a Vertex AI `PipelineJob` directly (no Pub/Sub hop, no separate trigger service) and move on without waiting for it to finish.
+
+The job is submitted with an explicit `pipelineJobId` of the form `churn-training-retrain-2026-09-07-153012`, so runs are identifiable wherever the resource name surfaces — Cloud Logging, the drift email, the suppression message — instead of Vertex's generated numeric id. `displayName` deliberately stays constant at `churn-training-retrain`, because `last_retrain_status` matches it literally to enforce the in-flight and minimum-interval guards; making it unique per run would stop both from matching anything.
+
+A deterministic id also makes submission idempotent, which matters for the ambiguous retry: if the create reaches Vertex but the response is lost, `http.default_retry` would otherwise start a **second** training run — two pipelines racing over the same `ml.split_assignments` partition. Instead the retry returns `409 ALREADY_EXISTS`, which is the confirmation that the intended job exists, so the workflow fetches it by name and continues. Regenerating the timestamp on each attempt would bring the duplicate back and discard the only signal separating "it worked" from "it didn't". A breach that clears the first two gates but is blocked by the third still sends an email naming the suppression reason. See [observability.md](observability.md) for the mechanics of each gate. A baseline monthly schedule independent of drift is not yet built.
 
 ---
 

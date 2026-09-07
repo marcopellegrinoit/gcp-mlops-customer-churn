@@ -715,6 +715,23 @@ submit_training_pipeline:
           - pipeline_sa: ${"vertex-ai-pipeline-sa@" + project_id + ".iam.gserviceaccount.com"}
           - batch_predict_sa: ${"vertex-batch-predict-sa@" + project_id + ".iam.gserviceaccount.com"}
 
+    # Without an explicit pipelineJobId Vertex generates a numeric one, so every run is
+    # identified as e.g. 4031686213072060416 — in Cloud Logging, in the drift email's
+    # pipeline_job.name, and in last_retrain_status's "a retraining pipeline is still
+    # running (...)" message. displayName cannot carry the distinction instead: it is
+    # matched literally by last_retrain_status to enforce the in-flight and 7-day-interval
+    # guards, so making it unique per run would silently stop both from matching anything.
+    #
+    # time.format renders epoch seconds as RFC 3339 ("2026-09-07T15:30:12Z"); the id
+    # charset is [a-z0-9-], so ':' is dropped and 'T'/'Z' are replaced to leave
+    # churn-training-retrain-2026-09-07-153012.
+    - build_job_id:
+        assign:
+          - submitted_at: ${time.format(sys.now())}
+          - stamp: ${text.replace_all(text.replace_all(text.replace_all(submitted_at, ":", ""), "T", "-"), "Z", "")}
+          - job_id: ${"churn-training-retrain-" + stamp}
+          - job_name: ${"projects/" + project_id + "/locations/" + region + "/pipelineJobs/" + job_id}
+
     - submit:
         try:
           call: http.post
@@ -722,6 +739,8 @@ submit_training_pipeline:
             url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/pipelineJobs"}
             auth:
               type: OAuth2
+            query:
+              pipelineJobId: ${job_id}
             body:
               displayName: "churn-training-retrain"
               templateUri: ${template_uri}
@@ -736,6 +755,37 @@ submit_training_pipeline:
                   batch_predict_service_account: ${batch_predict_sa}
           result: submit_resp
         retry: ${http.default_retry}
+        # A fixed id makes submission idempotent, and 409 is that guarantee doing its job
+        # rather than a failure. The dangerous retry case is the ambiguous one: the create
+        # reached Vertex and the response was lost. With a generated id the retry silently
+        # starts a SECOND training run — two pipelines racing over the same
+        # ml.split_assignments partition. With this id it comes back ALREADY_EXISTS, which
+        # tells us the job we wanted is already running, so we fetch it and carry on.
+        # Regenerating the timestamp per attempt would restore the duplicate and remove the
+        # only signal that distinguishes "it worked" from "it didn't".
+        except:
+          as: e
+          steps:
+            - classify_submit_error:
+                switch:
+                  - condition: ${e.code == 409}
+                    next: fetch_existing_job
+                next: rethrow_submit_error
+
+            - rethrow_submit_error:
+                raise: ${e}
+
+            # 409 is not in http.default_retry's retryable set, so this runs immediately
+            # rather than after the retries are exhausted.
+            - fetch_existing_job:
+                try:
+                  call: http.get
+                  args:
+                    url: ${"https://" + region + "-aiplatform.googleapis.com/v1/" + job_name}
+                    auth:
+                      type: OAuth2
+                  result: submit_resp
+                retry: ${http.default_retry}
 
     - return_job:
         return: ${submit_resp.body}
