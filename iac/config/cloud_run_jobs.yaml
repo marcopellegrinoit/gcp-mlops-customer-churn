@@ -28,7 +28,13 @@ cloud_run_jobs:
     env_vars:
       BQ_DATASET_ID: "raw"
       BQ_TABLE_ID: "activity_cdc"
+      # New customers acquired per elapsed day since the generator's pool epoch. Customer
+      # identities are otherwise stable across runs, so without acquisition the base only
+      # shrinks as customers churn and its tenure distribution climbs without bound.
+      DAILY_ACQUISITIONS: "25"
     bq_dataset_roles:
+      # dataEditor covers both the event insert and the read-back of already-churned
+      # customers, which is what makes churn an absorbing state across runs.
       raw: "roles/bigquery.dataEditor"
     service_account_project_roles:
       - "roles/bigquery.jobUser"
@@ -58,6 +64,9 @@ cloud_run_jobs:
       # detector into a nightly retrain loop.
       PERSISTENCE_WINDOW: "3"
       PERSISTENCE_MIN_BREACHES: "2"
+      # Data-quality gate: preceding feature-table partitions the row-volume assertion
+      # compares this snapshot against before allowing a retrain decision to stand.
+      QUALITY_HISTORY_PARTITIONS: "7"
     bq_dataset_roles:
       features: "roles/bigquery.dataViewer"
       # dataEditor, not dataViewer: the job appends each run's per-feature PSI to

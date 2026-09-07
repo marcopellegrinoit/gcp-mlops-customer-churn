@@ -5,9 +5,8 @@ from data_generator.main import CustomerProfile, _create_customer_pool
 
 @pytest.fixture
 def customer_pool() -> dict[str, CustomerProfile]:
-    """A small fixed-size customer pool for tests."""
-    rng = np.random.default_rng(seed=42)
-    return _create_customer_pool(20, rng)
+    """A small fixed customer pool. Deterministic by construction — no seed needed."""
+    return _create_customer_pool(initial_size=20, daily_acquisitions=0, days_elapsed=0)
 
 
 @pytest.fixture

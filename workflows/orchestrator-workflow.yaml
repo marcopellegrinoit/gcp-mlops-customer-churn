@@ -253,6 +253,37 @@ main:
           result: drift_decision
         retry: ${http.default_retry}
 
+    # Data quality is checked before drift is acted on, because the two demand opposite
+    # responses. A defect — a short load, a broken join, a column collapsed to one value —
+    # moves distributions exactly as a real population shift does, but retraining on it
+    # bakes the defect into the model, and the promotion gate cannot catch that because the
+    # challenger is evaluated against a test split drawn from the same bad snapshot. The
+    # drift monitor has already forced drift_detected to false in this case; this branch is
+    # what makes sure a human hears about it rather than the night just looking quiet.
+    - check_data_quality:
+        switch:
+          - condition: ${default(map.get(drift_decision.body, ["data_quality", "data_quality_failed"]), false)}
+            next: alert_data_quality_failure
+        next: check_drift
+
+    - alert_data_quality_failure:
+        try:
+          call: send_data_quality_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            decision: ${drift_decision.body}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_data_quality_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: done
+
     - check_drift:
         switch:
           - condition: ${drift_decision.body.drift_detected}
@@ -822,6 +853,53 @@ send_failure_alert:
               content:
                 - type: "text/plain"
                   value: '${"Cloud Workflows pipeline failed at job ''" + job_name + "''. Error: " + json.encode_to_string(error)}'
+          result: _
+        retry: ${http.default_retry}
+
+    - done:
+        return: null
+
+
+# A data-quality failure is an incident, not a model event: the pipeline produced a
+# snapshot that cannot be trusted, so the message names the failed assertions and says
+# explicitly that retraining was withheld — the opposite of the drift alert, which reports
+# that retraining was started.
+send_data_quality_alert:
+  params: [project_id, to_email, from_email, alerts_enabled, decision]
+  steps:
+    - check_alerts_enabled:
+        switch:
+          - condition: ${not alerts_enabled}
+            next: done
+    - get_key:
+        call: get_sendgrid_key
+        args:
+          project_id: ${project_id}
+        result: api_key
+
+    - build_message:
+        assign:
+          - subject: "[MLOps Alert] Feature snapshot failed data-quality checks"
+          - body_text: '${"The latest feature snapshot (" + string(decision.snapshot_date) + ") failed data-quality assertions, so retraining was withheld regardless of drift. Failures: " + json.encode_to_string(decision.data_quality.failures) + ". Retraining on a snapshot in this state would bake the defect into the model, and the champion/challenger gate would not catch it because the challenger is evaluated against the same data. Investigate the upstream pipeline before retraining."}'
+
+    - send_email:
+        try:
+          call: http.post
+          args:
+            url: "https://api.sendgrid.com/v3/mail/send"
+            headers:
+              Authorization: ${"Bearer " + api_key}
+              Content-Type: "application/json"
+            body:
+              personalizations:
+                - to:
+                    - email: ${to_email}
+              from:
+                email: ${from_email}
+              subject: ${subject}
+              content:
+                - type: "text/plain"
+                  value: ${body_text}
           result: _
         retry: ${http.default_retry}
 

@@ -10,17 +10,18 @@ A single master scheduler initiates the orchestration workflow once per day. The
 2. **Feature Transformation:** Upon ingestion success, the orchestrator invokes the feature engineering container. The SQL compilation and data transformation DAG must execute without errors to update the analytical tables.
 3. **Batch Prediction:** Once feature availability is confirmed and a champion model is registered, the workflow submits a Vertex AI `BatchPredictionJob` against the champion, polling it to completion. If no champion is registered yet (first-ever run), the workflow stops here cleanly — there's nothing to score or monitor yet.
 4. **Prediction Sync:** The `sync_predictions_to_ml_predictions` subworkflow reconciles the batch-predict job's unmanaged, auto-named scratch output table into the clean `ml.predictions` schema via a single BigQuery `MERGE` keyed on `(customer_id, snapshot_date)`, so the daily scoring run is queryable as a stable business-facing table, not just Vertex's own scratch table.
-5. **Drift Monitoring:** `drift-monitor-job` (a Cloud Run Job) compares the latest feature snapshot's distribution against the champion's frozen training-time baseline (PSI per feature) and writes its decision to GCS, which the workflow reads back to decide whether to retrain.
+5. **Drift Monitoring:** `drift-monitor-job` (a Cloud Run Job) compares the latest feature snapshot's distribution against the champion's frozen training-time baseline (PSI per feature, missingness included), runs data-quality assertions against the snapshot itself, appends the per-feature PSI to `ml.drift_metrics`, and writes its decision to GCS, which the workflow reads back to decide whether to retrain.
 
 If any stage within the pipeline encounters an unrecoverable exception, the orchestrator halts downstream blocks, handles error states smoothly, isolates the failure context, and broadcasts immediate alerts to designated monitoring integrations.
 
 ## The Retraining Loop
 
-The machine learning training lifecycle operates independently from daily scoring routines. Today retraining is purely drift-triggered, and a breach has to clear three gates before a `PipelineJob` is submitted:
+The machine learning training lifecycle operates independently from daily scoring routines. Today retraining is purely drift-triggered, and a breach has to clear four gates before a `PipelineJob` is submitted:
 
 1. **Calibration** — the feature's PSI must exceed both the configured effect size and the sampling-noise floor for that snapshot's size.
 2. **Persistence** — the breach must repeat (default 2 of the last 3 runs). A single night is not evidence of a distribution shift.
-3. **Rate limiting** — no retraining pipeline may already be in flight, and the last one must be at least 7 days old.
+3. **Data quality** — the snapshot must pass absolute assertions on row volume, key uniqueness, schema, null rates and column variance. A defect moves distributions just as drift does, but retraining on one bakes it into the model, and the promotion gate cannot catch that because the challenger is evaluated against the same bad data.
+4. **Rate limiting** — no retraining pipeline may already be in flight, and the last one must be at least 7 days old.
 
 Only then does the orchestrator submit the staged KFP template as a Vertex AI `PipelineJob` directly (no Pub/Sub hop, no separate trigger service) and move on without waiting for it to finish. A breach that clears the first two gates but is blocked by the third still sends an email naming the suppression reason. See [observability.md](observability.md) for the mechanics of each gate. A baseline monthly schedule independent of drift is not yet built.
 
@@ -47,7 +48,12 @@ flowchart TD
     SYNC -->|failure| ALERT_SYNC[["Alert (Email via SendGrid)"]]
 
     D -->|"per-feature PSI to ml.drift_metrics;<br/>decision to gs://&lt;project&gt;-pipeline-metadata/drift/latest.json"| READ[Workflow reads decision JSON]
-    READ --> DRIFT{"Persistent drift?<br/>(2 of last 3 runs)"}
+    READ --> DQ{"Snapshot passes<br/>data-quality assertions?"}
+
+    DQ -->|no| ALERT_DQ[["Email: Data-Quality Failure<br/>· Failed assertions<br/>· Retraining withheld"]]
+    ALERT_DQ --> TERM
+
+    DQ -->|yes| DRIFT{"Persistent drift?<br/>(2 of last 3 runs)"}
 
     DRIFT -->|drift| GUARD{"Retrain allowed?<br/>(no job in flight,<br/>≥7 days since last)"}
     DRIFT -->|no drift| TERM([Terminate Run])

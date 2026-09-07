@@ -24,6 +24,15 @@ Every spec also carries ``monitored``. A column that yields a single bucket (con
 one distinct value) has no distributional signal at all; its PSI is structurally 0.0,
 which reads as "healthy" when it really means "not being watched". Flagging it lets
 callers report unmonitored coverage instead of silently passing it.
+
+Missingness is part of the distribution, not something to drop before measuring it. Each
+spec records ``null_rate`` and the comparison carries an extra bucket for it, so a feature
+whose null rate moves is caught even when the values that *are* present look unchanged.
+The missingness here is neither random nor ignorable — ``engagement_score`` is absent for
+offline-only customers (MAR) and ``days_since_last_successful_payment`` is absent for
+exactly those customers who never paid successfully (MNAR, and correlated with the target)
+— so a shift in how often a column is null is a real population change, and often an
+earlier signal than the values themselves.
 """
 
 import logging
@@ -112,6 +121,7 @@ def evaluate_drift(baseline_stats: dict, current: pd.DataFrame, psi_threshold: f
     n_current = len(current)
     feature_psi: dict[str, float] = {}
     feature_thresholds: dict[str, float] = {}
+    null_rates: dict[str, dict[str, float]] = {}
     breached: dict[str, float] = {}
     unmonitored: list[str] = []
 
@@ -124,6 +134,16 @@ def evaluate_drift(baseline_stats: dict, current: pd.DataFrame, psi_threshold: f
         threshold = max(psi_threshold, psi_noise_floor(spec, n_current))
         feature_psi[col] = psi
         feature_thresholds[col] = threshold
+
+        # Reported alongside the PSI because missingness is the part of a breach that a
+        # human most often needs to see explicitly: "PSI 0.4" and "null rate went 3% -> 40%"
+        # call for very different responses, and the second is usually a broken upstream
+        # join rather than a population shift.
+        if _tracks_nulls(spec):
+            null_rates[col] = {
+                "baseline": float(spec["null_rate"]),
+                "current": _null_rate(current[col]),
+            }
 
         if not _is_monitored(spec):
             unmonitored.append(col)
@@ -141,6 +161,7 @@ def evaluate_drift(baseline_stats: dict, current: pd.DataFrame, psi_threshold: f
         "threshold": psi_threshold,
         "feature_psi": feature_psi,
         "feature_thresholds": feature_thresholds,
+        "feature_null_rates": null_rates,
         "breached_features": breached,
         "unmonitored_features": sorted(unmonitored),
         "current_sample_size": n_current,
@@ -148,30 +169,45 @@ def evaluate_drift(baseline_stats: dict, current: pd.DataFrame, psi_threshold: f
 
 
 def _categorical_baseline(values: pd.Series) -> dict:
-    frequencies = _category_frequencies(values)
+    frequencies = _category_frequencies(values.dropna())
+    null_rate = _null_rate(values)
     return {
         "type": "categorical",
         "frequencies": frequencies,
-        "monitored": len(frequencies) > 1,
+        "null_rate": null_rate,
+        # A single-category column still carries signal if its null rate can move.
+        "monitored": len(frequencies) > 1 or 0.0 < null_rate < 1.0,
     }
 
 
 def _numeric_baseline(values: pd.Series) -> dict:
     clean = values.dropna().astype(float)
+    null_rate = _null_rate(values)
     if clean.empty:
-        return {"type": "discrete", "frequencies": {}, "monitored": False}
+        # Entirely null at training time: there is no value distribution to compare against,
+        # and a column in that state is a data-quality failure rather than a drift signal.
+        return {"type": "discrete", "frequencies": {}, "null_rate": null_rate, "monitored": False}
 
     if clean.nunique() <= _MAX_DISCRETE_CARDINALITY:
-        frequencies = _value_frequencies(clean)
-        return {"type": "discrete", "frequencies": frequencies, "monitored": len(frequencies) > 1}
+        return {
+            "type": "discrete",
+            "frequencies": _value_frequencies(clean),
+            "null_rate": null_rate,
+            "monitored": clean.nunique() > 1 or 0.0 < null_rate < 1.0,
+        }
 
     bin_edges = _decile_edges(clean)
     return {
         "type": "numeric",
         "bin_edges": bin_edges,
         "expected_pct": _bucket_proportions(clean, bin_edges),
-        "monitored": len(bin_edges) > 2,  # >2 edges == >1 bucket
+        "null_rate": null_rate,
+        "monitored": len(bin_edges) > 2 or 0.0 < null_rate < 1.0,  # >2 edges == >1 bucket
     }
+
+
+def _null_rate(values: pd.Series) -> float:
+    return float(values.isna().mean()) if len(values) else 0.0
 
 
 def _is_monitored(spec: dict) -> bool:
@@ -225,10 +261,11 @@ def _numeric_key(value: float) -> str:
     return str(float(value))
 
 
-def _expected_vector(spec: dict) -> list[float]:
-    """The baseline's proportion per bucket, in a fixed order."""
+def _value_proportions(spec: dict) -> list[float]:
+    """The baseline's proportion per bucket among present values — no null bucket."""
     if spec["type"] in ("categorical", "discrete"):
         return list(spec["frequencies"].values())
+
     expected_pct = spec.get("expected_pct")
     if expected_pct is None:
         # Legacy baseline: proportions were never stored. Report uniform so a PSI number
@@ -238,14 +275,64 @@ def _expected_vector(spec: dict) -> list[float]:
     return list(expected_pct)
 
 
+def _expected_vector(spec: dict) -> list[float]:
+    """The full baseline distribution the live column is compared against, nulls included.
+
+    This is the vector the noise-floor bootstrap samples from, so it has to span exactly the
+    buckets _distributions produces — value buckets rescaled to the non-null mass, plus the
+    null bucket — or the simulated PSI would be computed over a different support than the
+    real one and the calibrated threshold would not apply.
+    """
+    vector = _value_proportions(spec)
+    if _tracks_nulls(spec):
+        null_rate = float(spec["null_rate"])
+        vector = [p * (1.0 - null_rate) for p in vector] + [null_rate]
+    return vector
+
+
+def _tracks_nulls(spec: dict) -> bool:
+    """Whether this spec records missingness.
+
+    Baselines frozen before null_rate was stored do not, and for those the old behaviour is
+    preserved exactly: numeric columns drop nulls, and a categorical column's nulls fall into
+    a "nan" pseudo-category via astype(str). Retrofitting a null bucket onto them would
+    compare a live null rate against an expectation of zero and manufacture a breach.
+    """
+    return "null_rate" in spec
+
+
 def _distributions(spec: dict, current: pd.Series) -> tuple[np.ndarray, np.ndarray]:
     """Align the baseline and the live column onto a shared set of buckets."""
+    tracks_nulls = _tracks_nulls(spec)
     if spec["type"] == "categorical":
-        return _frequency_distributions(spec["frequencies"], current.astype(str))
-    if spec["type"] == "discrete":
+        keys = current.dropna().astype(str) if tracks_nulls else current.astype(str)
+        expected_pct, actual_pct = _frequency_distributions(spec["frequencies"], keys)
+    elif spec["type"] == "discrete":
         keys = current.dropna().astype(float).map(_numeric_key)
-        return _frequency_distributions(spec["frequencies"], keys)
-    return _binned_distributions(spec, current)
+        expected_pct, actual_pct = _frequency_distributions(spec["frequencies"], keys)
+    else:
+        expected_pct, actual_pct = _binned_distributions(spec, current)
+
+    if not tracks_nulls:
+        return expected_pct, actual_pct
+    return _append_null_bucket(spec, expected_pct, actual_pct, current)
+
+
+def _append_null_bucket(
+    spec: dict, expected_pct: np.ndarray, actual_pct: np.ndarray, current: pd.Series
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rescale both value distributions to their non-null mass and add a bucket for nulls.
+
+    Each side's buckets hold proportions *among present values*, so both are scaled by their
+    own non-null share before the null bucket is appended. The result is a proper
+    distribution over (values..., missing) on both sides, and a pure shift in missingness
+    registers even when the present values are distributed identically.
+    """
+    baseline_null = float(spec["null_rate"])
+    current_null = _null_rate(current)
+    expected_pct = np.append(expected_pct * (1.0 - baseline_null), baseline_null)
+    actual_pct = np.append(actual_pct * (1.0 - current_null), current_null)
+    return expected_pct, actual_pct
 
 
 def _frequency_distributions(
@@ -264,7 +351,8 @@ def _binned_distributions(spec: dict, current: pd.Series) -> tuple[np.ndarray, n
         # A degenerate baseline can still carry a single-element bin_edges array — fall
         # back to the same single (-inf, inf) bucket _decile_edges produces for that case.
         bin_edges = [-np.inf, np.inf]
-    expected_pct = np.asarray(_expected_vector(spec), dtype=float)
+    # Value buckets only — _distributions appends the null bucket to both sides afterwards.
+    expected_pct = np.asarray(_value_proportions(spec), dtype=float)
     counts, _ = np.histogram(current.dropna().astype(float), bins=bin_edges)
     actual_pct = counts / max(counts.sum(), 1)
     return expected_pct, actual_pct

@@ -21,20 +21,34 @@ The generator is fully controlled by environment variables injected at Cloud Run
 | `BQ_TABLE_ID` | Yes | — | Target table (e.g. `activity_cdc`) |
 | `BATCH_SIZE` | No | `2000` | Number of events to generate and stream-insert per invocation |
 | `ANOMALY_RATE` | No | `0.0` | Fraction of events that carry injected out-of-range feature values (0.0–1.0) |
-| `USER_POOL_SIZE` | No | `10000` | Size of the synthetic customer pool; larger pools create longer unique-customer histories |
+| `USER_POOL_SIZE` | No | `10000` | Founding customer base, acquired on the pool epoch |
+| `DAILY_ACQUISITIONS` | No | `25` | New customers acquired per elapsed day since the pool epoch |
 
 ### Customer Pool
 
-Each invocation generates a fresh in-memory pool of `USER_POOL_SIZE` **customer profiles** (`CustomerProfile`). Each profile encodes stable per-customer traits assigned once at startup that persist across every event the customer generates within that batch:
+Customer identities are **stable across runs**. Every profile is derived deterministically from its index — `uuid5` for the id, an RNG seeded with the index for its traits — so customer *n* is the same customer on every invocation and their events accumulate into a single history. Nothing is persisted between runs to achieve this; the pool is reconstructed identically each time.
+
+This is load-bearing rather than cosmetic. Every column in `customer_features` is a window aggregate over one customer's own history — `avg_transaction_30d`, `events_last_90d`, `payment_failure_rate_30d`, `days_since_last_successful_payment`, `renewal_count`. An earlier version minted a fresh `uuid4()` pool on every run, so no customer ever received a second event. Measured in production, that produced **32,609 customers over 14 days at 1.1 events each, with zero spanning more than one day**: every window aggregate collapsed to a constant or a two-to-three-value discrete, and the `churned` label — read from the customer's most recent event — was a single coin flip uncorrelated with any accumulated behaviour. The model was being fit to noise, and the drift monitor was watching features that could not move.
 
 | Trait | Description | Missing value effect |
 |---|---|---|
 | `preferred_channel` | The customer's primary interaction channel | Drives the `channel` field on every event |
 | `is_offline_only` | `True` when channel is `direct_mail` or `phone` (~33% of customers) | `engagement_score = NULL` on every event — **MAR**: missingness is fully explained by `channel` |
 | `always_fails_payments` | `True` for ~8% of customers | `payment_status` is always `failed` or `pending`, never `success` — produces `days_since_last_successful_payment = NULL` in the feature matrix — **MNAR**: missingness correlates with elevated churn |
-| `member_since_days` | Tenure in days; `None` for ~3% of customers | `member_since_days = NULL` in the feature matrix — **MCAR**: missing at random, no correlation with outcome |
+| `tenure_days_at_join` | Tenure on joining; `None` for ~3% of customers | `member_since_days = NULL` in the feature matrix — **MCAR**: missing at random, no correlation with outcome |
+| `membership_tier`, `region` | Fixed per customer | Previously drawn per event, which made a customer appear in a different tier and region on every event — with `customer_features` reading whichever the latest event carried, both columns were noise |
+
+`member_since_days` is `tenure_days_at_join` plus the days since that customer joined, so tenure advances with time instead of being a fixed random draw. Daily acquisition is what keeps the resulting distribution at a steady state: in a closed base, tenure would climb for everyone at once and become a permanent source of drift.
 
 This design ensures that missing values in the feature matrix arise from structurally consistent customer behaviour rather than random per-event noise, making them suitable for imputation strategy selection during model training.
+
+### Churn Is Absorbing
+
+A customer who churns emits a final `membership_cancelled` event and is never selected again. The generator reads back the set of already-churned customers from `raw.activity_cdc` at the start of each run and excludes them, and within a run a customer is removed from the selectable set the moment their event comes back flagged.
+
+Both halves matter, because `customer_features` derives the label from the customer's *most recent* event. Without them, a customer would flicker between churned and not-churned as later events overwrote earlier ones, and the target would describe a moment rather than the customer. `membership_cancelled` is correspondingly reserved for a real churn rather than being one of the event types an active customer emits at random.
+
+A read failure degrades to treating the whole base as active. That keeps generating events for customers who have left — a visible data problem rather than a silent one — which is preferable to failing the run and producing nothing.
 
 ### Event Schema
 
@@ -63,12 +77,14 @@ Every row written to BigQuery contains the following fields:
 
 Churn probability is not uniform — it is elevated for customers exhibiting distress signals:
 
-| Condition | Churn Probability |
+| Condition | Per-event churn hazard |
 |---|---|
-| `engagement_score IS NULL` **or** `engagement_score < 0.15` **or** `payment_attempts_last_30d > 5` **or** `always_fails_payments = True` | **25%** |
-| Otherwise | **4%** |
+| `engagement_score IS NULL` **or** `engagement_score < 0.15` **or** `payment_attempts_last_30d > 5` **or** `always_fails_payments = True` | **2%** |
+| Otherwise | **0.2%** |
 
 This asymmetry creates a learnable signal for the downstream ML model without making churn trivially predictable.
+
+These are per-event *hazards* on an absorbing state, not the per-event coin flip they replace. A customer now sees many events over their lifetime and each one is a fresh opportunity to churn, so the rates are an order of magnitude lower than the previous 25%/4% — at the old values the entire base would cancel within days.
 
 ### Anomaly Injection
 

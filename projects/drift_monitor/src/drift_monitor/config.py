@@ -17,3 +17,8 @@ BATCH_PREDICT_DISPLAY_NAME: str = os.environ.get("BATCH_PREDICT_DISPLAY_NAME")
 # more than a couple of days.
 PERSISTENCE_WINDOW: int = int(os.environ.get("PERSISTENCE_WINDOW", "3"))
 PERSISTENCE_MIN_BREACHES: int = int(os.environ.get("PERSISTENCE_MIN_BREACHES", "2"))
+
+# How many preceding feature-table partitions the data-quality row-volume assertion
+# compares this snapshot against. A week smooths over any single odd day without
+# reaching so far back that a deliberate change in scale looks like a failed load.
+QUALITY_HISTORY_PARTITIONS: int = int(os.environ.get("QUALITY_HISTORY_PARTITIONS", "7"))

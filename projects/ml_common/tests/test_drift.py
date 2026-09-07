@@ -94,6 +94,7 @@ def test_psi_numeric_handles_constant_baseline_column():
     assert stats["is_trial_account"] == {
         "type": "discrete",
         "frequencies": {"0.0": 1.0},
+        "null_rate": 0.0,
         "monitored": False,
     }
     scores = compute_psi(stats, constant_df)
@@ -209,3 +210,86 @@ def test_small_sample_noise_does_not_trigger_drift(baseline_df):
     result = evaluate_drift(stats, tiny, psi_threshold=0.2)
     assert result["feature_thresholds"]["avg_transaction_30d"] > 0.2
     assert result["drift_detected"] is False
+
+
+@pytest.fixture()
+def nullable_df() -> pd.DataFrame:
+    """Columns whose missingness carries signal, like the real MAR/MNAR features."""
+    rng = np.random.RandomState(21)
+    engagement = rng.beta(2, 5, 2000)
+    engagement[rng.rand(2000) < 0.20] = np.nan  # offline-only customers (MAR)
+    return pd.DataFrame(
+        {
+            "avg_engagement_30d": engagement,
+            "membership_tier": rng.choice(["friend", "champion", "guardian"], 2000),
+        }
+    )
+
+
+def test_baseline_records_null_rate(nullable_df):
+    stats = compute_baseline_stats(nullable_df)
+    assert stats["avg_engagement_30d"]["null_rate"] == pytest.approx(0.20, abs=0.03)
+    assert stats["membership_tier"]["null_rate"] == 0.0
+
+
+def test_null_rate_shift_is_detected_when_present_values_are_unchanged(nullable_df):
+    # The whole point of tracking missingness: the values that are present are drawn from
+    # the identical distribution, so a values-only comparison would report no drift at all.
+    stats = compute_baseline_stats(nullable_df)
+    rng = np.random.RandomState(22)
+    engagement = rng.beta(2, 5, 2000)
+    engagement[rng.rand(2000) < 0.70] = np.nan  # upstream join breaks -> 70% missing
+    shifted = nullable_df.copy()
+    shifted["avg_engagement_30d"] = engagement
+
+    result = evaluate_drift(stats, shifted, psi_threshold=0.2)
+
+    assert "avg_engagement_30d" in result["breached_features"]
+    assert result["feature_null_rates"]["avg_engagement_30d"]["current"] == pytest.approx(
+        0.70, abs=0.04
+    )
+
+
+def test_stable_null_rate_does_not_trigger_drift(nullable_df):
+    stats = compute_baseline_stats(nullable_df)
+    rng = np.random.RandomState(23)
+    engagement = rng.beta(2, 5, 2000)
+    engagement[rng.rand(2000) < 0.20] = np.nan  # same missingness as the baseline
+    fresh = nullable_df.copy()
+    fresh["avg_engagement_30d"] = engagement
+
+    assert evaluate_drift(stats, fresh, psi_threshold=0.2)["drift_detected"] is False
+
+
+def test_categorical_null_rate_is_tracked_separately_from_categories(nullable_df):
+    stats = compute_baseline_stats(nullable_df)
+    shifted = nullable_df.copy()
+    shifted.loc[shifted.index[:1000], "membership_tier"] = None  # half the column goes null
+
+    result = evaluate_drift(stats, shifted, psi_threshold=0.2)
+
+    assert "membership_tier" in result["breached_features"]
+    assert result["feature_null_rates"]["membership_tier"]["current"] == pytest.approx(0.5)
+
+
+def test_all_null_column_is_unmonitored():
+    stats = compute_baseline_stats(pd.DataFrame({"never_populated": [np.nan] * 500}))
+    assert stats["never_populated"]["null_rate"] == 1.0
+    assert stats["never_populated"]["monitored"] is False
+
+
+def test_legacy_baseline_without_null_rate_keeps_old_nan_handling():
+    # Retrofitting a null bucket onto a baseline that never recorded one would compare a
+    # live null rate against an expectation of zero and manufacture a breach.
+    stats = {"membership_tier": {"type": "categorical", "frequencies": {"friend": 1.0}}}
+    current = pd.DataFrame({"membership_tier": ["friend"] * 1000})
+    result = evaluate_drift(stats, current, psi_threshold=0.2)
+    assert result["feature_psi"]["membership_tier"] == pytest.approx(0.0, abs=1e-9)
+    assert result["feature_null_rates"] == {}
+
+
+def test_noise_floor_spans_the_null_bucket(nullable_df):
+    # The bootstrap must sample over the same support the real comparison uses, or the
+    # calibrated threshold would not apply to the PSI it is compared against.
+    stats = compute_baseline_stats(nullable_df)
+    assert psi_noise_floor(stats["avg_engagement_30d"], 200) > 0.0

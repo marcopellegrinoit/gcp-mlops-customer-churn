@@ -146,11 +146,19 @@ class TestNormalValues:
             assert event["contact_requests_last_30d"] >= 0
 
     def test_member_since_days_in_range(self, customer_pool):
+        # Tenure now advances with elapsed time, so the ceiling is the join-time tenure
+        # plus however long the customer has been in the base.
         rng = np.random.default_rng(seed=0)
         for _ in range(300):
-            event = _generate_event(customer_pool, rng, anomaly=False)
+            event = _generate_event(customer_pool, rng, anomaly=False, days_elapsed=0)
             days = event["member_since_days"]
             assert days is None or 1 <= days <= 3650
+
+    def test_member_since_days_advances_with_elapsed_time(self, customer_pool, rng):
+        profile = next(p for p in customer_pool.values() if p.tenure_days_at_join is not None)
+        at_join = _generate_event(customer_pool, rng, profile=profile, days_elapsed=0)
+        later = _generate_event(customer_pool, rng, profile=profile, days_elapsed=100)
+        assert later["member_since_days"] == at_join["member_since_days"] + 100
 
     def test_anomaly_injected_false(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng, anomaly=False)
@@ -260,22 +268,32 @@ class TestChurnLogic:
         assert _CHURN_HIGH_PAYMENT_THRESHOLD == 5
 
     def test_high_risk_anomaly_events_churn_at_elevated_rate(self, customer_pool):
-        """Anomaly events have payment_attempts >= 50 > threshold, so churn_prob = 0.25."""
+        """Anomaly events exceed the payment threshold, so they take the high churn hazard.
+
+        The hazard is now per-event on an absorbing state rather than a per-event coin flip
+        that a customer could re-roll forever, so the rate is deliberately low — a customer
+        sees many events over their life, and the old 25% would empty the base in days.
+        """
         rng = np.random.default_rng(seed=7)
+        trials = 4000
         churned = sum(
-            _generate_event(customer_pool, rng, anomaly=True)["churned"] for _ in range(400)
+            _generate_event(customer_pool, rng, anomaly=True)["churned"] for _ in range(trials)
         )
-        churn_rate = churned / 400
-        # Expected ~25%; bounds are wide enough to survive sampling variance
-        assert 0.12 < churn_rate < 0.40, (
-            f"Expected ~25% churn for high-risk events, got {churn_rate:.1%}"
+        churn_rate = churned / trials
+        assert 0.5 * _CHURN_PROB_HIGH < churn_rate < 2.0 * _CHURN_PROB_HIGH, (
+            f"Expected ~{_CHURN_PROB_HIGH:.1%} churn for high-risk events, got {churn_rate:.1%}"
         )
 
     def test_low_risk_events_churn_at_low_rate(self, customer_pool):
-        """Normal events with safe engagement/payment values should churn at ~4%."""
+        """Normal events with safe engagement/payment values take the low churn hazard.
+
+        Needs far more samples than the high-risk case: the low hazard is a few tenths of a
+        percent per event, so a few hundred draws would frequently contain no churn at all
+        and the test would be measuring nothing.
+        """
         rng = np.random.default_rng(seed=3)
         safe_events = []
-        for _ in range(5000):
+        for _ in range(60000):
             e = _generate_event(customer_pool, rng, anomaly=False)
             profile = customer_pool[e["customer_id"]]
             if (
@@ -285,12 +303,12 @@ class TestChurnLogic:
                 and not profile.always_fails_payments
             ):
                 safe_events.append(e)
-            if len(safe_events) >= 400:
+            if len(safe_events) >= 8000:
                 break
 
         churn_rate = sum(e["churned"] for e in safe_events) / len(safe_events)
-        assert 0.0 < churn_rate < 0.12, (
-            f"Expected ~4% churn for low-risk events, got {churn_rate:.1%}"
+        assert 0.0 < churn_rate < 3.0 * _CHURN_PROB_LOW, (
+            f"Expected ~{_CHURN_PROB_LOW:.1%} churn for low-risk events, got {churn_rate:.2%}"
         )
 
 
@@ -309,7 +327,10 @@ def _offline_profile() -> CustomerProfile:
         preferred_channel="direct_mail",
         is_offline_only=True,
         always_fails_payments=False,
-        member_since_days=365,
+        tenure_days_at_join=365,
+        membership_tier="friend",
+        region="eu-west",
+        joined_on_day=0,
     )
 
 
@@ -319,7 +340,10 @@ def _failing_profile() -> CustomerProfile:
         preferred_channel="email",
         is_offline_only=False,
         always_fails_payments=True,
-        member_since_days=365,
+        tenure_days_at_join=365,
+        membership_tier="friend",
+        region="eu-west",
+        joined_on_day=0,
     )
 
 
@@ -341,7 +365,10 @@ class TestMissingValues:
                 preferred_channel="email",
                 is_offline_only=False,
                 always_fails_payments=False,
-                member_since_days=365,
+                tenure_days_at_join=365,
+                membership_tier="friend",
+                region="eu-west",
+                joined_on_day=0,
             )
         )
         for _ in range(30):
@@ -365,7 +392,10 @@ class TestMissingValues:
                 preferred_channel="web",
                 is_offline_only=False,
                 always_fails_payments=False,
-                member_since_days=None,
+                tenure_days_at_join=None,
+                membership_tier="friend",
+                region="eu-west",
+                joined_on_day=0,
             )
         )
         for _ in range(10):
@@ -382,8 +412,7 @@ class TestMissingValues:
 
     def test_offline_pool_produces_null_engagement_at_expected_rate(self):
         """With ~33% offline channels, roughly a third of events should have null engagement."""
-        rng = np.random.default_rng(seed=0)
-        pool = _create_customer_pool(300, rng)
+        pool = _create_customer_pool(initial_size=300, daily_acquisitions=0, days_elapsed=0)
         offline_fraction = sum(1 for p in pool.values() if p.is_offline_only) / len(pool)
 
         rng2 = np.random.default_rng(seed=1)
@@ -392,3 +421,60 @@ class TestMissingValues:
 
         # null rate should be close to the offline customer fraction
         assert abs(null_fraction - offline_fraction) < 0.10
+
+
+# ---------------------------------------------------------------------------
+# Stable identity — the property every window aggregate depends on
+# ---------------------------------------------------------------------------
+
+
+class TestStableIdentity:
+    def test_pool_is_identical_across_calls(self):
+        # The regression that made every rolling-window feature meaningless: a fresh uuid4()
+        # pool per run meant no customer ever received a second event.
+        first = _create_customer_pool(initial_size=50, daily_acquisitions=0, days_elapsed=0)
+        second = _create_customer_pool(initial_size=50, daily_acquisitions=0, days_elapsed=0)
+        assert set(first) == set(second)
+
+    def test_profiles_are_identical_across_calls(self):
+        first = _create_customer_pool(initial_size=50, daily_acquisitions=0, days_elapsed=0)
+        second = _create_customer_pool(initial_size=50, daily_acquisitions=0, days_elapsed=0)
+        assert first == second
+
+    def test_yesterdays_pool_is_a_subset_of_todays(self):
+        # Acquisition must add customers, never re-identify the existing base.
+        yesterday = _create_customer_pool(initial_size=50, daily_acquisitions=10, days_elapsed=3)
+        today = _create_customer_pool(initial_size=50, daily_acquisitions=10, days_elapsed=4)
+        assert set(yesterday) < set(today)
+        assert len(today) - len(yesterday) == 10
+
+    def test_pool_grows_with_elapsed_days(self):
+        pool = _create_customer_pool(initial_size=100, daily_acquisitions=5, days_elapsed=10)
+        assert len(pool) == 150
+
+    def test_tier_and_region_are_stable_per_customer(self, customer_pool, rng):
+        # Both were drawn per event before, so a customer appeared in a different tier and
+        # region on every event and customer_features read whichever came last.
+        profile = next(iter(customer_pool.values()))
+        events = [_generate_event(customer_pool, rng, profile=profile) for _ in range(50)]
+        assert {e["membership_tier"] for e in events} == {profile.membership_tier}
+        assert {e["region"] for e in events} == {profile.region}
+
+
+# ---------------------------------------------------------------------------
+# Churn is absorbing
+# ---------------------------------------------------------------------------
+
+
+class TestChurnSemantics:
+    def test_churned_events_are_cancellations(self, customer_pool):
+        rng = np.random.default_rng(seed=0)
+        events = [_generate_event(customer_pool, rng) for _ in range(2000)]
+        churned = [e for e in events if e["churned"]]
+        assert churned, "expected at least one churn in 2000 events"
+        assert all(e["event_type"] == "membership_cancelled" for e in churned)
+
+    def test_active_events_are_never_cancellations(self, customer_pool):
+        rng = np.random.default_rng(seed=0)
+        events = [_generate_event(customer_pool, rng) for _ in range(2000)]
+        assert all(e["event_type"] != "membership_cancelled" for e in events if not e["churned"])

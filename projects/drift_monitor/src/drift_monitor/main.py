@@ -24,6 +24,7 @@ def main() -> None:
         batch_predict_display_name=platform_config.BATCH_PREDICT_DISPLAY_NAME,
         persistence_window=platform_config.PERSISTENCE_WINDOW,
         persistence_min_breaches=platform_config.PERSISTENCE_MIN_BREACHES,
+        quality_history_partitions=platform_config.QUALITY_HISTORY_PARTITIONS,
     )
     log.info("Drift check result: %s", result)
 

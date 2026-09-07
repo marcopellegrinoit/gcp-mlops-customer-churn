@@ -5,10 +5,11 @@ import logging
 import pandas as pd
 from google.cloud import aiplatform
 from ml_common.config import CHURN_PROBABILITY_FIELD
+from ml_common.data_quality import check_data_quality
 from ml_common.drift import compute_psi, evaluate_drift, psi_noise_floor
 from ml_common.preprocess import select_inference_features
 
-from drift_monitor.bigquery import fetch_latest_snapshot
+from drift_monitor.bigquery import fetch_latest_snapshot, fetch_quality_context
 from drift_monitor.champion import fetch_champion
 from drift_monitor.history import prior_breach_counts, record_run
 from drift_monitor.predictions import fetch_latest_predictions
@@ -27,6 +28,7 @@ def run_drift_check(
     batch_predict_display_name: str,
     persistence_window: int,
     persistence_min_breaches: int,
+    quality_history_partitions: int,
 ) -> dict:
     """Run the PSI drift check against the current champion and write the decision to GCS.
 
@@ -61,10 +63,70 @@ def run_drift_check(
     _apply_persistence_rule(
         result, project_id, champion.resource_name, persistence_window, persistence_min_breaches
     )
+    _apply_data_quality_gate(
+        result,
+        current,
+        metadata["baseline_stats"],
+        project_id,
+        bq_features_table,
+        snapshot_date,
+        quality_history_partitions,
+    )
     _record_history(result, project_id, run_ts, snapshot_date, champion.resource_name)
 
     upload_json(decision_gcs_uri, result)
     return result
+
+
+def _apply_data_quality_gate(
+    result: dict,
+    current: pd.DataFrame,
+    baseline_stats: dict,
+    project_id: str,
+    bq_features_table: str,
+    snapshot_date: str,
+    quality_history_partitions: int,
+) -> None:
+    """Suppress the retrain decision if the snapshot itself is broken; edits result in place.
+
+    Runs after the drift verdict rather than before it so the PSI numbers are still computed
+    and recorded — they are useful evidence when diagnosing the defect — but it overrides
+    drift_detected, because retraining on a corrupted snapshot bakes the corruption into the
+    model. The promotion gate offers no protection here either: the challenger is evaluated
+    against a test split drawn from the same bad snapshot, so it can score well and be
+    promoted on the strength of the defect.
+
+    A failure to run the check is itself treated as a failure to clear it. This is the one
+    place in this job that fails closed: every other degradation (missing history, a
+    score-side error) biases toward not retraining anyway, and so does this one.
+    """
+    try:
+        recent_row_counts, duplicate_key_count = fetch_quality_context(
+            project_id, bq_features_table, snapshot_date, quality_history_partitions
+        )
+        quality = check_data_quality(
+            current, baseline_stats, recent_row_counts, duplicate_key_count
+        )
+    except Exception:
+        log.exception("Data-quality check could not run; suppressing retraining for this run.")
+        quality = {
+            "data_quality_failed": True,
+            "failures": [
+                {"check": "check_failed", "detail": "the data-quality check itself errored"}
+            ],
+            "row_count": len(current),
+        }
+
+    result["data_quality"] = quality
+    if not quality["data_quality_failed"]:
+        return
+
+    log.error(
+        "Data-quality assertions failed; not retraining: %s",
+        "; ".join(f["detail"] for f in quality["failures"]),
+    )
+    result["retrain_suppressed_by_data_quality"] = bool(result.get("drift_detected"))
+    result["drift_detected"] = False
 
 
 def _apply_persistence_rule(

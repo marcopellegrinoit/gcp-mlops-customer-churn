@@ -39,6 +39,16 @@ The stored proportions matter. `np.quantile` on a column with a mass point retur
 
 The same collapse had a mirror-image effect: a column that degenerated to a single bucket scored a structural PSI of `0.0` and read as perfectly healthy while being, in fact, unwatched. Every spec now carries `monitored`, and `evaluate_drift` reports those columns in `unmonitored_features` instead of silently counting them as passing.
 
+### Missingness Is Part of the Distribution
+
+Every spec also records `null_rate`, and the comparison carries an extra bucket for it: each side's value buckets are rescaled to its own non-null mass and the null share is appended, giving a proper distribution over *(values…, missing)* on both sides. A feature whose null rate moves is therefore caught even when the values that *are* present look unchanged — which a values-only comparison misses entirely, because it never sees the rows that went missing.
+
+This matters here specifically because the missingness is neither random nor ignorable: `engagement_score` is absent for offline-only customers (**MAR**) and `days_since_last_successful_payment` is absent for exactly those customers who never paid successfully (**MNAR**, and correlated with the target — see [data-lifecycle.md](data-lifecycle.md)). A shift in how often either is null is a real population change, and usually an earlier signal than the values themselves.
+
+The decision JSON reports `feature_null_rates` (baseline vs current per feature) alongside the PSI, because the two call for different responses: "PSI 0.4" and "null rate went 3% → 40%" usually mean a population shift and a broken upstream join respectively.
+
+Baselines frozen before `null_rate` was recorded keep the old behaviour exactly — numeric columns drop nulls, categorical nulls fall into a `"nan"` pseudo-category. Retrofitting a null bucket onto them would compare a live null rate against an expectation of zero and manufacture a breach.
+
 ### Per-Feature Thresholds
 
 A daily snapshot is a finite sample, so PSI is never exactly zero even against a perfectly stable population — and the smaller the sample, the larger that noise. A single hardcoded 0.2 applied across every feature ignores this.
@@ -76,6 +86,33 @@ At check time, `drift_monitor.predictions.fetch_latest_predictions` finds the ch
 The score check applies the same two-part threshold the feature check does — `max(PSI_THRESHOLD, psi_noise_floor(score_baseline, len(predictions)))`, reported as `score_threshold` — and its PSI is appended to `ml.drift_metrics` under the `churn_probability` feature name so score drift has the same history as any input feature.
 
 This check is **monitoring-only**: `score_psi`/`score_threshold`/`score_drift_detected` are written into the same decision JSON as additive fields, but the feature-only `drift_detected` still exclusively drives automated retraining. A score-only breach still reaches a human — `orchestrator-workflow` sends a `send_drift_alert` email for it (no `PipelineJob` submitted, just a review prompt) — see below. A failure anywhere in this check (BigQuery permission issue, no matching batch-prediction job yet, a malformed `output_info`) degrades silently to "no score signal this run" rather than affecting the feature-PSI result.
+
+## Data Quality vs. Drift
+
+Drift and defects are indistinguishable from a PSI score alone — a broken upstream join, a partial load, or a column that silently became `NULL` moves a distribution exactly as a genuine population shift does. The correct responses are opposite:
+
+| | Cause | Correct response |
+|---|---|---|
+| **Drift** | The world changed | Retrain on the new distribution |
+| **Defect** | The data is wrong | Halt, page a human, fix the pipeline |
+
+Retraining on a defect bakes it into the model. The champion/challenger gate offers no protection, because the challenger is evaluated against a test split drawn from the *same* corrupted snapshot — it can score well and be promoted precisely on the strength of the defect.
+
+`ml_common.data_quality.check_data_quality` therefore runs as a separate gate, comparing the live snapshot against the champion's frozen baseline and against the feature table's own recent history. These are absolute assertions rather than distributional ones, and they fire on first occurrence rather than waiting for the N-of-M persistence rule that governs genuine drift:
+
+| Assertion | Fails when | What it catches |
+|---|---|---|
+| `row_volume` | Snapshot is under 50% of the median of the last `QUALITY_HISTORY_PARTITIONS` (default 7) partitions | An incomplete upstream load — dbt writes the partition whether or not every source event arrived |
+| `duplicate_keys` | Any `customer_id` appears more than once | `stg_activity_cdc`'s event dedup or `customer_features`' `QUALIFY ROW_NUMBER()` stopped holding, so aggregates are computed over duplicated history |
+| `missing_columns` | A feature the champion trained on is absent | Schema change upstream |
+| `null_rate` | A feature's null rate is more than 25 points above its training baseline | A broken join, distinguished from the genuine missingness shifts that PSI handles |
+| `collapsed_column` | A feature that varied at training now has one distinct value | An upstream default written into every row — the case where PSI is least reliable |
+
+A failure forces `drift_detected` to false, records `retrain_suppressed_by_data_quality`, and routes the orchestrator to `alert_data_quality_failure`, which names the failed assertions and states that retraining was withheld. The PSI numbers are still computed and written to `ml.drift_metrics` — they are useful evidence when diagnosing the defect.
+
+This gate is the one check in the job that **fails closed**: if it cannot run at all, the run is treated as having failed it. Every other degradation in this job already biases toward not retraining, and so does this one.
+
+> Placement: the gate currently runs inside `drift-monitor-job`, which is after batch prediction, so a corrupt snapshot is still scored before the failure is caught. Failing fast between `dbt-job` and batch prediction would be better and is the natural next step; it needs a separate Cloud Run job rather than a new branch in an existing one.
 
 ## Automated Remediation
 

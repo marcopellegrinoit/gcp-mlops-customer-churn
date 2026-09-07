@@ -30,6 +30,7 @@ on the fly — it has no pyproject.toml and is not part of the repo's uv workspa
 #   "google-cloud-storage>=3,<4",
 #   "ml-common",
 #   "pandas>=2",
+#   "xgboost>=2,<4",
 #   "db-dtypes>=1.7.1,<2",
 # ]
 #
@@ -40,8 +41,11 @@ on the fly — it has no pyproject.toml and is not part of the repo's uv workspa
 import argparse
 import json
 import os
+import tempfile
 
+import numpy as np
 import pandas as pd
+import xgboost as xgb
 from google.cloud import aiplatform, bigquery, storage
 from ml_common.config import (
     CHURN_PROBABILITY_FIELD,
@@ -136,6 +140,46 @@ def write_metadata(artifact_uri: str, metadata: dict) -> None:
     blob.upload_from_string(json.dumps(metadata), content_type="application/json")
 
 
+def _rebuild_score_baseline(artifact_uri: str, X: pd.DataFrame, previous_spec: dict) -> dict:
+    """Recompute the training-time churn_probability distribution by rescoring the model.
+
+    The score baseline is the distribution of the model's own predictions on its training
+    data, so unlike the feature baselines it cannot be derived from the split table alone —
+    it needs the model. Loading model.ubj and rescoring the exact rows and column order the
+    trainer used reproduces it, which keeps score-drift monitoring alive; carrying the old
+    spec across instead would leave it unmonitored, because it predates stored proportions.
+
+    The reproduction is verified before it is trusted: the new decile edges must match the
+    frozen ones. They were computed from the same model on the same rows, so a mismatch
+    means something differs (a categorical mapping, a column order) and the safe response is
+    to keep the old spec and let the next retrain replace it.
+    """
+    bucket_name, _, prefix = artifact_uri.removeprefix("gs://").partition("/")
+    blob = storage.Client().bucket(bucket_name).blob(f"{prefix}/model.ubj")
+
+    with tempfile.NamedTemporaryFile(suffix=".ubj") as tmp:
+        blob.download_to_filename(tmp.name)
+        model = xgb.XGBClassifier(enable_categorical=True)
+        model.load_model(tmp.name)
+
+    scores = pd.DataFrame({CHURN_PROBABILITY_FIELD: model.predict_proba(X)[:, 1]})
+    rebuilt = compute_baseline_stats(scores)[CHURN_PROBABILITY_FIELD]
+
+    frozen_edges = previous_spec.get("bin_edges")
+    if rebuilt["type"] != "numeric" or frozen_edges is None:
+        return rebuilt  # nothing comparable to verify against; the recomputed spec is still right
+
+    if not np.allclose(rebuilt["bin_edges"], frozen_edges, rtol=1e-3, atol=1e-4, equal_nan=True):
+        print(
+            "  WARNING: rescored churn_probability does not reproduce the frozen bin edges; "
+            "keeping the existing spec (score drift stays unmonitored until the next retrain)."
+        )
+        return previous_spec
+
+    print("  churn_probability rescored and verified against the frozen edges.")
+    return rebuilt
+
+
 def rebuild(project_id: str, region: str, snapshot_date: str | None, dry_run: bool) -> None:
     """Recompute baseline_stats from the frozen training split and rewrite metadata.json."""
     aiplatform.init(project=project_id, location=region)
@@ -162,15 +206,11 @@ def rebuild(project_id: str, region: str, snapshot_date: str | None, dry_run: bo
 
     baseline_stats = compute_baseline_stats(X)
 
-    # The churn_probability pseudo-feature is a distribution of the model's own training-time
-    # scores. Rescoring here would need the model loaded and the serving container's exact
-    # preprocessing, so the existing entry is carried across untouched — it is a plain numeric
-    # distribution built by the same code path and is unaffected by the collapsed-bucket
-    # defect only if it, too, has stored proportions; if it doesn't, it stays unmonitored
-    # until the next retrain, which is the safe direction.
     previous_score_spec = metadata["baseline_stats"].get(CHURN_PROBABILITY_FIELD)
     if previous_score_spec is not None:
-        baseline_stats[CHURN_PROBABILITY_FIELD] = previous_score_spec
+        baseline_stats[CHURN_PROBABILITY_FIELD] = _rebuild_score_baseline(
+            champion.uri, X, previous_score_spec
+        )
 
     unmonitored = sorted(c for c, spec in baseline_stats.items() if not spec.get("monitored"))
     print(f"\nRebuilt {len(baseline_stats)} feature baselines from {len(X)} training rows.")

@@ -22,7 +22,21 @@ def _baseline_df() -> pd.DataFrame:
     return pd.DataFrame({"avg_transaction_30d": rng.normal(50, 10, 500)})
 
 
-def _run(monkeypatch, metadata, feature_df, fetch_predictions=None, prior_breaches=None):
+def _run(
+    monkeypatch,
+    metadata,
+    feature_df,
+    fetch_predictions=None,
+    prior_breaches=None,
+    prior_breach_counts=None,
+    quality_context=None,
+):
+    """Drive run_drift_check with every GCP boundary stubbed.
+
+    prior_breach_counts/quality_context take a callable so a test can install a raising stub;
+    passing them through here rather than letting a test monkeypatch the module directly
+    keeps this helper from overwriting the stub the test just set.
+    """
     monkeypatch.setattr(detect_module.aiplatform, "init", lambda **kwargs: None)
     monkeypatch.setattr(detect_module, "fetch_champion", lambda model_display_name: _FakeChampion())
     monkeypatch.setattr(detect_module, "download_json", lambda uri: metadata)
@@ -34,9 +48,14 @@ def _run(monkeypatch, metadata, feature_df, fetch_predictions=None, prior_breach
     if fetch_predictions is not None:
         monkeypatch.setattr(detect_module, "fetch_latest_predictions", fetch_predictions)
     monkeypatch.setattr(
-        detect_module, "prior_breach_counts", lambda *a, **kw: dict(prior_breaches or {})
+        detect_module,
+        "prior_breach_counts",
+        prior_breach_counts or (lambda *a, **kw: dict(prior_breaches or {})),
     )
     monkeypatch.setattr(detect_module, "record_run", lambda *args: None)
+    monkeypatch.setattr(
+        detect_module, "fetch_quality_context", quality_context or (lambda *a, **kw: ([], 0))
+    )
     uploaded = {}
     monkeypatch.setattr(
         detect_module, "upload_json", lambda uri, obj: uploaded.update(uri=uri, obj=obj)
@@ -52,6 +71,7 @@ def _run(monkeypatch, metadata, feature_df, fetch_predictions=None, prior_breach
         batch_predict_display_name=_DISPLAY_NAME,
         persistence_window=3,
         persistence_min_breaches=2,
+        quality_history_partitions=7,
     )
     return result, uploaded
 
@@ -75,6 +95,7 @@ def test_run_drift_check_returns_no_champion_reason_when_none_registered(monkeyp
         batch_predict_display_name=_DISPLAY_NAME,
         persistence_window=3,
         persistence_min_breaches=2,
+        quality_history_partitions=7,
     )
 
     assert result == {"drift_detected": False, "reason": "no_champion_registered"}
@@ -324,8 +345,13 @@ def test_unreadable_history_fails_safe_to_no_retraining(monkeypatch):
     def _boom(*args, **kwargs):
         raise RuntimeError("drift_metrics not found")
 
-    monkeypatch.setattr(detect_module, "prior_breach_counts", _boom)
-    result, _ = _run(monkeypatch, metadata, shifted_df, fetch_predictions=lambda *a, **kw: None)
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted_df,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breach_counts=_boom,
+    )
 
     assert result["run_drift_detected"] is True
     assert result["drift_detected"] is False
@@ -348,3 +374,77 @@ def test_history_write_failure_does_not_discard_the_decision(monkeypatch):
 
     assert result["drift_detected"] is False
     assert uploaded["obj"] == result
+
+
+def test_data_quality_failure_suppresses_retraining(monkeypatch):
+    # Drift that is really a broken snapshot must not retrain: the challenger would be
+    # trained AND evaluated on the same corrupted data, so the promotion gate cannot catch it.
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    collapsed = baseline_df.copy()
+    collapsed["avg_transaction_30d"] = 1.0  # upstream default written into every row
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        collapsed,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={"avg_transaction_30d": 5},
+    )
+
+    assert result["run_drift_detected"] is True
+    assert result["drift_detected"] is False
+    assert result["retrain_suppressed_by_data_quality"] is True
+    assert result["data_quality"]["data_quality_failed"] is True
+    assert "collapsed_column" in {f["check"] for f in result["data_quality"]["failures"]}
+
+
+def test_healthy_snapshot_leaves_the_drift_verdict_alone(monkeypatch):
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    shifted = baseline_df.copy()
+    shifted["avg_transaction_30d"] = shifted["avg_transaction_30d"] + 100
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={"avg_transaction_30d": 1},
+    )
+
+    assert result["data_quality"]["data_quality_failed"] is False
+    assert result["drift_detected"] is True
+    assert "retrain_suppressed_by_data_quality" not in result
+
+
+def test_data_quality_check_failure_fails_closed(monkeypatch):
+    # The one check that fails closed: if we cannot verify the snapshot, we do not retrain.
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    shifted = baseline_df.copy()
+    shifted["avg_transaction_30d"] = shifted["avg_transaction_30d"] + 100
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("BigQuery unavailable")
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={"avg_transaction_30d": 1},
+        quality_context=_boom,
+    )
+
+    assert result["drift_detected"] is False
+    assert result["data_quality"]["data_quality_failed"] is True
