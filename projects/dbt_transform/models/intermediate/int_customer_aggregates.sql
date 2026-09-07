@@ -1,21 +1,33 @@
+/*
+  Every rolling window here is anchored to the snapshot date — the day the features are
+  computed — not to each customer's own most recent event.
+
+  The distinction is the whole meaning of these columns. Anchoring per customer made
+  "events_last_30d" mean "events in the 30 days before this customer last did anything",
+  so a customer dormant for six weeks and one active this morning produced windows over
+  completely different calendar periods and were indistinguishable in the feature matrix.
+  It also guaranteed every window contained at least one event (the anchor event itself),
+  so events_last_30d could never be 0 and dormancy — the single strongest churn signal —
+  was unrepresentable.
+
+  days_since_last_successful_payment showed the damage most starkly: measured from the
+  customer's own last event, it was 0 for all 11,193 customers that had a value at all,
+  while true calendar staleness spanned 16 days. A feature whose entire purpose is recency
+  was a constant. Anchoring to the snapshot date makes it mean what its name says.
+
+  CURRENT_DATE() matches the snapshot_date customer_features stamps in the same dbt run, so
+  a feature row and its partition key always describe the same day.
+*/
+
 WITH source AS (
     SELECT * FROM {{ ref('stg_activity_cdc') }}
-),
-
-customer_max_ts AS (
-    SELECT
-        customer_id,
-        MAX(event_timestamp) AS latest_event_ts
-    FROM source
-    GROUP BY customer_id
 ),
 
 events_windowed AS (
     SELECT
         s.*,
-        TIMESTAMP_DIFF(d.latest_event_ts, s.event_timestamp, DAY) AS days_since_event
+        DATE_DIFF(CURRENT_DATE(), DATE(s.event_timestamp), DAY) AS days_since_event
     FROM source s
-    JOIN customer_max_ts d USING (customer_id)
 ),
 
 last_successful_payment AS (
@@ -60,6 +72,9 @@ SELECT
 
     -- Activity volume
     COUNT(*)                                                              AS total_events,
+    -- Now genuinely 0 for a customer with no activity in the window. Under the previous
+    -- per-customer anchoring these could never fall below 1, because the anchor event was
+    -- always inside its own window.
     COUNTIF(e.days_since_event <= 30)                                     AS events_last_30d,
     COUNTIF(e.days_since_event <= 90)                                     AS events_last_90d,
     COUNTIF(e.event_type = 'membership_renewal')                          AS renewal_count

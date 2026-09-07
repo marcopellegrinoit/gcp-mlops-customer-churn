@@ -35,7 +35,12 @@ models:
       - name: payment_failure_rate_30d
         description: "Fraction of payment events in the last 30 days that failed. NULL if no events."
       - name: days_since_last_successful_payment
-        description: "Days since last successful payment. 9999 when no successful payment on record."
+        description: >
+          Calendar days from the customer's most recent successful payment to snapshot_date.
+          NULL when there is no successful payment on record — which is informative rather
+          than missing, since it identifies customers who have never paid successfully (MNAR,
+          correlated with churn; see data-lifecycle.md). No 9999 sentinel is emitted; the
+          column previously documented one that the SQL never produced.
       - name: snapshot_date
         description: "Date when this feature snapshot was computed. Partition key — one partition per dbt run day."
         tests:
