@@ -19,6 +19,8 @@ rather than waiting for the N-of-M persistence rule that governs genuine drift.
 
 import pandas as pd
 
+from ml_common.config import CHURN_PROBABILITY_FIELD
+
 # A snapshot smaller than this fraction of the recent median means the upstream load is
 # incomplete — dbt writes the partition whether or not every source event arrived.
 MIN_ROW_RATIO: float = 0.5
@@ -98,7 +100,7 @@ def _check_duplicate_keys(duplicate_key_count: int) -> list[dict]:
 
 def _check_expected_columns(current: pd.DataFrame, baseline_stats: dict) -> list[dict]:
     """Every feature the champion was trained on has to be present to score against it."""
-    missing = sorted(set(baseline_stats) - set(current.columns))
+    missing = sorted(_input_features(baseline_stats) - set(current.columns))
     if not missing:
         return []
     return [
@@ -137,12 +139,19 @@ def _check_collapsed_columns(current: pd.DataFrame, baseline_stats: dict) -> lis
     This is what an upstream default being written into every row looks like — a constant
     is not a distribution, and PSI on it is unreliable in exactly the case where the
     underlying problem is most severe.
+
+    Gated on the baseline's own *value* cardinality rather than on `monitored`: a column can
+    be monitored purely because its null rate carries signal while its present values were
+    already constant at training time (days_since_last_successful_payment is exactly this).
+    Such a column has not collapsed — it never varied — and flagging it would fail this
+    check every single night.
     """
     failures = []
+    if len(current) == 0:
+        return failures
+
     for col, spec in baseline_stats.items():
-        if col not in current.columns or not spec.get("monitored"):
-            continue
-        if len(current) == 0:
+        if col not in current.columns or _baseline_cardinality(spec) <= 1:
             continue
         if current[col].nunique(dropna=True) <= 1:
             failures.append(
@@ -152,3 +161,21 @@ def _check_collapsed_columns(current: pd.DataFrame, baseline_stats: dict) -> lis
                 }
             )
     return failures
+
+
+def _input_features(baseline_stats: dict) -> set[str]:
+    """Baseline entries that are genuinely input columns of the feature snapshot.
+
+    The baseline also carries the churn_probability pseudo-feature — the model's own
+    training-time score distribution, folded in so score drift reuses the same machinery.
+    It is an output, never a column of customer_features, so it is not "missing" from a
+    snapshot and must not be asserted on.
+    """
+    return set(baseline_stats) - {CHURN_PROBABILITY_FIELD}
+
+
+def _baseline_cardinality(spec: dict) -> int:
+    """How many distinct value buckets the baseline held, ignoring missingness."""
+    if spec["type"] in ("categorical", "discrete"):
+        return len(spec.get("frequencies", {}))
+    return max(len(spec.get("bin_edges", [])) - 1, 0)

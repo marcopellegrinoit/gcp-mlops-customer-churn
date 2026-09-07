@@ -103,3 +103,34 @@ def test_every_failure_is_reported_not_just_the_first(snapshot, baseline):
     broken["avg_transaction_30d"] = 1.0
     report = check_data_quality(broken, baseline, [1000, 1000], 3)
     assert {"row_volume", "duplicate_keys", "null_rate", "collapsed_column"} <= _checks(report)
+
+
+def test_score_pseudo_feature_is_not_reported_missing(snapshot, baseline):
+    # churn_probability is the model's own score distribution, folded into baseline_stats so
+    # score drift reuses the same machinery. It is an output, never a column of the feature
+    # snapshot — asserting on it failed this check on every single run.
+    from ml_common.config import CHURN_PROBABILITY_FIELD
+
+    with_score = {
+        **baseline,
+        CHURN_PROBABILITY_FIELD: compute_baseline_stats(
+            pd.DataFrame({CHURN_PROBABILITY_FIELD: np.linspace(0, 1, 500)})
+        )[CHURN_PROBABILITY_FIELD],
+    }
+    report = check_data_quality(snapshot, with_score, [1000], 0)
+    assert "missing_columns" not in _checks(report)
+    assert report["data_quality_failed"] is False
+
+
+def test_column_constant_at_training_is_not_reported_collapsed():
+    # A column can be monitored purely because its null rate carries signal while its
+    # present values were already constant — days_since_last_successful_payment is exactly
+    # this. It has not collapsed; it never varied.
+    values = pd.Series([0.0] * 300 + [np.nan] * 700)
+    df = pd.DataFrame({"days_since_last_successful_payment": values})
+    baseline = compute_baseline_stats(df)
+    assert baseline["days_since_last_successful_payment"]["monitored"] is True
+
+    report = check_data_quality(df, baseline, [1000], 0)
+    assert "collapsed_column" not in _checks(report)
+    assert report["data_quality_failed"] is False
