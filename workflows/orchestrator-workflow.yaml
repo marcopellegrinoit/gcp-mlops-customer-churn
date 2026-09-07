@@ -877,10 +877,16 @@ send_data_quality_alert:
           project_id: ${project_id}
         result: api_key
 
+    # Workflows caps a single expression at 400 characters, so the message is assembled
+    # across several assignments (each under the cap) and concatenated last — the same
+    # pattern sync_predictions_to_ml_predictions uses for its MERGE statement.
     - build_message:
         assign:
           - subject: "[MLOps Alert] Feature snapshot failed data-quality checks"
-          - body_text: '${"The latest feature snapshot (" + string(decision.snapshot_date) + ") failed data-quality assertions, so retraining was withheld regardless of drift. Failures: " + json.encode_to_string(decision.data_quality.failures) + ". Retraining on a snapshot in this state would bake the defect into the model, and the champion/challenger gate would not catch it because the challenger is evaluated against the same data. Investigate the upstream pipeline before retraining."}'
+          - body_part1: '${"The latest feature snapshot (" + string(decision.snapshot_date) + ") failed data-quality assertions, so retraining was withheld regardless of drift. "}'
+          - body_part2: '${"Failed checks: " + json.encode_to_string(decision.data_quality.failures) + ". "}'
+          - body_part3: "Retraining on a snapshot in this state would bake the defect into the model, and the champion/challenger gate would not catch it: the challenger is evaluated against a test split drawn from the same bad data. Investigate the upstream pipeline before retraining."
+          - body_text: ${body_part1 + body_part2 + body_part3}
 
     - send_email:
         try:
