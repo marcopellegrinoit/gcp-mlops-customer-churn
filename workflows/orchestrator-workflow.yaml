@@ -827,6 +827,7 @@ last_retrain_status:
           - retrain_display_name: "churn-training-retrain"
           - allowed: {"blocked": false, "reason": ""}
           - rejections: 0
+          - rejections_resp: null
 
     # The counter register_or_reject maintains: reset to 0 on promotion, incremented on
     # every rejection. Absent until the first training run completes, and a read failure
@@ -846,9 +847,17 @@ last_retrain_status:
                 assign:
                   - rejections_resp: null
 
-    - set_rejections:
+    # Workflows expressions have no map literal, so the absent-state case is a branch
+    # rather than a default({}) fallback — `rejections` simply keeps the 0 set in init.
+    - check_rejections_present:
+        switch:
+          - condition: ${rejections_resp == null}
+            next: set_backoff
+        next: extract_rejections
+
+    - extract_rejections:
         assign:
-          - rejections: ${default(map.get(default(rejections_resp, {}), ["body", "consecutive_rejections"]), 0)}
+          - rejections: ${default(map.get(rejections_resp, ["body", "consecutive_rejections"]), 0)}
 
     # 0 / 1 / 2 / 7 days. A ladder of jump targets rather than arithmetic: Workflows has no
     # pow(), and a switch condition dispatches with `next`, not by assigning inline. The
