@@ -798,27 +798,90 @@ submit_training_pipeline:
 
 
 # Whether a retraining PipelineJob may be submitted right now. Returns
-# {blocked: bool, reason: string}. Two independent guards, both needed:
+# {blocked: bool, reason: string}. Two independent guards:
 #
-#   in_flight     — training runs far longer than this DAG waits, so yesterday's job is
-#                   very often still going. Stacking a second one doubles the Vertex spend
-#                   and races it against the first over the same ml.split_assignments
-#                   partition (trainer.data.export_snapshot rewrites it per snapshot_date).
-#   rate_limited  — drift that outlives a retrain (a real shift the challenger can't beat,
-#                   or an upstream defect retraining cannot fix) would otherwise submit a
-#                   fresh job every single night, indefinitely. The floor converts that
-#                   into at most one attempt per interval, and post_training's
-#                   MAX_CONSECUTIVE_REJECTIONS alert is what escalates it to a human.
+#   in_flight  — training runs far longer than this DAG waits, so yesterday's job is very
+#                often still going. Stacking a second one doubles the Vertex spend and races
+#                it against the first over the same ml.split_assignments partition
+#                (trainer.data.export_snapshot rewrites it per snapshot_date). This is the
+#                guard that actually prevents concurrent runs, and it is time-independent.
+#   backing_off — throttles *repeated failed attempts*, not retraining in general.
+#
+# The back-off is keyed on post_training's consecutive_rejections counter rather than on a
+# flat interval, because elapsed time is the wrong question. What matters is whether a new
+# run could plausibly produce a different outcome. A flat floor conflates two opposite
+# situations: a retrain that was promoted (the system is working — the next genuine drift
+# deserves an immediate response) and a retrain that was rejected (more of the same data
+# will very likely be rejected again). It also means a real population shift arriving two
+# days after a successful promotion goes unaddressed for the rest of the window, which is a
+# worse failure than the spend it was protecting against.
+#
+# So: 0 rejections -> no delay at all. Then 1, 2 and 7 days as rejections accumulate, which
+# responds to evidence that retraining is not helping rather than to the calendar.
+# post_training's MAX_CONSECUTIVE_REJECTIONS alert still escalates to a human in parallel.
 last_retrain_status:
   params: [project_id, region]
   steps:
     - init:
         assign:
-          # 7 days: long enough that a promoted challenger has settled in as champion and
-          # is being measured against its own fresh baseline before the next attempt.
-          - min_retrain_interval_seconds: 604800
           - retrain_display_name: "churn-training-retrain"
           - allowed: {"blocked": false, "reason": ""}
+          - rejections: 0
+
+    # The counter register_or_reject maintains: reset to 0 on promotion, incremented on
+    # every rejection. Absent until the first training run completes, and a read failure
+    # must not block retraining — both degrade to 0, i.e. "no evidence of repeated failure".
+    - read_rejections:
+        try:
+          call: http.get
+          args:
+            url: ${"https://storage.googleapis.com/storage/v1/b/" + project_id + "-pipeline-metadata/o/post-training-state%2Fchurn-predictor%2Fconsecutive_rejections.json?alt=media"}
+            auth:
+              type: OAuth2
+          result: rejections_resp
+        except:
+          as: e
+          steps:
+            - no_rejection_state:
+                assign:
+                  - rejections_resp: null
+
+    - set_rejections:
+        assign:
+          - rejections: ${default(map.get(default(rejections_resp, {}), ["body", "consecutive_rejections"]), 0)}
+
+    # 0 / 1 / 2 / 7 days. A ladder of jump targets rather than arithmetic: Workflows has no
+    # pow(), and a switch condition dispatches with `next`, not by assigning inline. The
+    # shape that matters is "free after a success, escalating while attempts keep failing".
+    - set_backoff:
+        switch:
+          - condition: ${rejections <= 0}
+            next: backoff_none
+          - condition: ${rejections == 1}
+            next: backoff_one_day
+          - condition: ${rejections == 2}
+            next: backoff_two_days
+        next: backoff_max
+
+    - backoff_none:
+        assign:
+          - backoff_seconds: 0
+        next: list_recent
+
+    - backoff_one_day:
+        assign:
+          - backoff_seconds: 86400
+        next: list_recent
+
+    - backoff_two_days:
+        assign:
+          - backoff_seconds: 172800
+        next: list_recent
+
+    - backoff_max:
+        assign:
+          - backoff_seconds: 604800
+        next: list_recent
 
     - list_recent:
         try:
@@ -860,16 +923,16 @@ last_retrain_status:
           blocked: true
           reason: ${"a retraining pipeline is still running (" + latest.name + ")"}
 
-    - check_rate_limit:
+    - check_backoff:
         switch:
-          - condition: ${age_seconds < min_retrain_interval_seconds}
-            next: block_rate_limited
+          - condition: ${backoff_seconds > 0 and age_seconds < backoff_seconds}
+            next: block_backing_off
         next: allow
 
-    - block_rate_limited:
+    - block_backing_off:
         return:
           blocked: true
-          reason: ${"last retraining ran " + string(int(age_seconds / 3600)) + "h ago, under the " + string(int(min_retrain_interval_seconds / 86400)) + "-day minimum interval"}
+          reason: ${"last retraining ran " + string(int(age_seconds / 3600)) + "h ago and the previous " + string(rejections) + " challenger(s) were rejected, so attempts are backing off for " + string(int(backoff_seconds / 3600)) + "h"}
 
     - allow:
         return: ${allowed}

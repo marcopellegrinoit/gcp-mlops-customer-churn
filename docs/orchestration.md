@@ -21,7 +21,7 @@ The machine learning training lifecycle operates independently from daily scorin
 1. **Calibration** — the feature's PSI must exceed both the configured effect size and the sampling-noise floor for that snapshot's size.
 2. **Persistence** — the breach must repeat (default 2 of the last 3 runs). A single night is not evidence of a distribution shift.
 3. **Data quality** — the snapshot must pass absolute assertions on row volume, key uniqueness, schema, null rates and column variance. A defect moves distributions just as drift does, but retraining on one bakes it into the model, and the promotion gate cannot catch that because the challenger is evaluated against the same bad data.
-4. **Rate limiting** — no retraining pipeline may already be in flight, and the last one must be at least 7 days old.
+4. **Back-off** — no retraining pipeline may already be in flight, and if previous challengers were rejected the next attempt waits (1, 2 then 7 days as rejections accumulate). A promotion resets the counter, so the next genuine drift retrains immediately.
 
 Only then does the orchestrator submit the staged KFP template as a Vertex AI `PipelineJob` directly (no Pub/Sub hop, no separate trigger service) and move on without waiting for it to finish.
 
@@ -59,7 +59,7 @@ flowchart TD
 
     DQ -->|yes| DRIFT{"Persistent drift?<br/>(2 of last 3 runs)"}
 
-    DRIFT -->|drift| GUARD{"Retrain allowed?<br/>(no job in flight,<br/>≥7 days since last)"}
+    DRIFT -->|drift| GUARD{"Retrain allowed?<br/>(no job in flight,<br/>past rejection back-off)"}
     DRIFT -->|no drift| TERM([Terminate Run])
 
     GUARD -->|yes| TRAIN["Trigger Training<br/>(PipelineJob.create,<br/>fire-and-forget)"]

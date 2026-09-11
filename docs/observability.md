@@ -124,8 +124,19 @@ Fire-and-forget submission needs a brake. Drift can outlive a retrain — a genu
 
 | Guard | Condition | Why |
 |-------|-----------|-----|
-| `in_flight` | Latest job is `PENDING`/`QUEUED`/`RUNNING` | Training outlives this DAG, so yesterday's job is often still going. Stacking doubles Vertex spend and races the two runs against each other over the same `ml.split_assignments` partition. |
-| `rate_limited` | Latest job started under 7 days ago | Converts indefinite nightly submission into at most one attempt per interval, long enough for a promoted challenger to settle in as champion and be measured against its own fresh baseline. |
+| `in_flight` | Latest job is `PENDING`/`QUEUED`/`RUNNING` | Training outlives this DAG, so yesterday's job is often still going. Stacking doubles Vertex spend and races the two runs against each other over the same `ml.split_assignments` partition. **This is the guard that actually prevents concurrent runs**, and it is independent of elapsed time. |
+| `backing_off` | Previous challengers were rejected *and* the last attempt is newer than the back-off window | Throttles **repeated failed attempts**, not retraining in general. |
+
+The back-off is keyed on `consecutive_rejections` rather than a flat interval, because elapsed time is the wrong question — what matters is whether a new run could plausibly produce a different outcome:
+
+| `consecutive_rejections` | Delay before the next attempt |
+|---|---|
+| 0 (last challenger was promoted) | **none** |
+| 1 | 1 day |
+| 2 | 2 days |
+| 3+ | 7 days |
+
+A flat floor conflated two opposite situations. A retrain that was *promoted* means the loop is working, so the next genuine drift deserves an immediate response; a retrain that was *rejected* means more of the same data will very likely be rejected again. The flat version also let a real population shift arriving two days after a successful promotion go unaddressed for the rest of the window — a worse failure than the spend it was avoiding. Reading the counter is best-effort: an absent or unreadable state file degrades to 0, i.e. "no evidence of repeated failure", which favours retraining rather than suppressing it.
 
 A blocked night is **not** silent: `alert_retrain_suppressed` sends the drift email with the suppression reason, so a suppressed night is distinguishable from a quiet one. Escalation to a human remains `post_training`'s `MAX_CONSECUTIVE_REJECTIONS` feature-review alert.
 
