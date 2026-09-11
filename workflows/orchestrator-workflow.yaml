@@ -853,11 +853,30 @@ last_retrain_status:
         switch:
           - condition: ${rejections_resp == null}
             next: set_backoff
-        next: extract_rejections
+        next: decode_rejections
 
-    - extract_rejections:
-        assign:
-          - rejections: ${default(map.get(rejections_resp, ["body", "consecutive_rejections"]), 0)}
+    # Workflows parses a response body into a map only for JSON content types, and this
+    # object is served as text/plain — post_training's upload_text calls upload_from_string
+    # without one, so GCS defaults it. The body therefore arrives as the raw string
+    # '{"consecutive_rejections": 7}', map.get on it yields null, and the guard silently
+    # read 0 rejections and imposed no delay at all. That is how a verified-deployed guard
+    # still submitted a retrain 3.7 days into a 7-day back-off.
+    #
+    # Decoding under try/except rather than testing the type keeps this correct under either
+    # content type: a string decodes, an already-parsed map raises and falls through to the
+    # map read. So fixing the producer later cannot silently re-break it.
+    - decode_rejections:
+        try:
+          steps:
+            - parse_rejection_text:
+                assign:
+                  - rejections: ${default(map.get(json.decode(rejections_resp.body), "consecutive_rejections"), 0)}
+        except:
+          as: e
+          steps:
+            - rejection_body_already_parsed:
+                assign:
+                  - rejections: ${default(map.get(rejections_resp, ["body", "consecutive_rejections"]), 0)}
 
     # 0 / 1 / 2 / 7 days. A ladder of jump targets rather than arithmetic: Workflows has no
     # pow(), and a switch condition dispatches with `next`, not by assigning inline. The
