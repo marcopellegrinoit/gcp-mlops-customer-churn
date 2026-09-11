@@ -925,7 +925,7 @@ last_retrain_status:
         switch:
           - condition: ${latest_state in ["PIPELINE_STATE_PENDING", "PIPELINE_STATE_QUEUED", "PIPELINE_STATE_RUNNING"]}
             next: block_in_flight
-        next: check_rate_limit
+        next: check_backoff
 
     - block_in_flight:
         return:
