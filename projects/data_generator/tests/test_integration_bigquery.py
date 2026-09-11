@@ -10,7 +10,8 @@ Skip in CI environments without Docker:
 import os
 
 import pytest
-from data_generator.main import Config, run
+from data_generator.config import Settings
+from data_generator.main import run
 from google.cloud import bigquery
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.waiting_utils import wait_for_logs
@@ -78,7 +79,7 @@ def bq_client():
 class TestRunAgainstEmulator:
     def test_run_completes_without_error(self, bq_client):
         """run() must not raise when the emulator accepts the streaming insert."""
-        cfg = Config(
+        cfg = Settings(
             project_id=_PROJECT,
             dataset_id=_DATASET,
             table_id=_TABLE,
@@ -90,7 +91,7 @@ class TestRunAgainstEmulator:
 
     def test_run_inserts_correct_row_count(self, bq_client):
         """Row count must increase by exactly batch_size."""
-        cfg = Config(
+        cfg = Settings(
             project_id=_PROJECT,
             dataset_id=_DATASET,
             table_id=_TABLE,
@@ -105,7 +106,7 @@ class TestRunAgainstEmulator:
 
     def test_anomaly_rows_are_stored(self, bq_client):
         """Rows inserted with anomaly_rate=1.0 must all have anomaly_injected=TRUE."""
-        cfg = Config(
+        cfg = Settings(
             project_id=_PROJECT,
             dataset_id=_DATASET,
             table_id=_TABLE,
@@ -131,7 +132,7 @@ class TestRunAgainstEmulator:
 
     def test_normal_rows_have_valid_engagement_score(self, bq_client):
         """Normal events must land with engagement_score in [0, 1]."""
-        cfg = Config(
+        cfg = Settings(
             project_id=_PROJECT,
             dataset_id=_DATASET,
             table_id=_TABLE,

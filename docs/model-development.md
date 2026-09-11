@@ -57,8 +57,10 @@ The primary DS workflow is a Jupyter notebook in `notebooks/` that imports direc
 ```python
 from google.cloud import bigquery
 from ml_common.preprocess import prepare_features
+from modeling.config import get_settings as get_modeling_settings
 from modeling.train import train_model
-from modeling import config
+
+modeling_cfg = get_modeling_settings()
 
 df = bigquery.Client().query("""
     SELECT * EXCEPT (feature_computed_at, latest_event_ts)
@@ -68,10 +70,10 @@ df = bigquery.Client().query("""
 """).to_dataframe()
 
 X, y = prepare_features(df)
-model, feat_names, shap = train_model(X, y, {"max_depth": 4, "learning_rate": 0.1, ...}, config.XGB_FIXED_PARAMS)
+model, feat_names, shap = train_model(X, y, {"max_depth": 4, "learning_rate": 0.1, ...}, modeling_cfg.fixed_params)
 ```
 
-No Dockerfile, no KFP pipeline, no orchestration. The notebook talks directly to BQ and calls the same functions that the pipeline will run in production.
+No Dockerfile, no KFP pipeline, no orchestration. The notebook talks directly to BQ and calls the same functions that the pipeline will run in production — including the same settings objects, which default to the deployed values and need no environment to import. To try a different policy for one session, set the corresponding variable before starting Jupyter (`MODELING_HPO_N_TRIALS=20`, `ML_TARGET_RECALL=0.9`, or `MODELING_HPO_SEARCH_SPACE` as JSON) rather than editing the call sites.
 
 ### Unit tests
 
@@ -88,11 +90,14 @@ All ML decisions live in `projects/modeling/` and `projects/ml_common/`:
 
 | File | Package | What the DS controls |
 |---|---|---|
-| `config.py` | `modeling` | Search space, fixed params, promotion thresholds, CV strategy |
+| `config.py` | `modeling` | Search space (typed: `IntParam`/`FloatParam`), fixed XGBoost params, HPO budget |
+| `config.py` | `ml-common` | Promotion gate deltas, target recall, split, data-quality tolerances |
 | `preprocess.py` | `ml-common` | Feature encoding, column drops, categorical handling |
 | `train.py` | `modeling` | Model fit loop, SHAP computation, out-of-fold threshold selection |
 | `hpo.py` | `modeling` | Optuna objective function, CV fold logic |
 | `evaluate.py` | `ml-common` | Metrics (at an already-selected threshold), SHAP rank correlation; also owns the pure `select_threshold` function `train.py` calls |
+
+Both `config.py` files are `pydantic-settings` classes: the values in them are the *defaults*, and each is overridable per deployment through an `ML_`- or `MODELING_`-prefixed environment variable (see [architecture.md](architecture.md#data-contracts--configuration)). Changing a default is a code change and goes through review; changing what production runs with today is a Terraform apply against `iac/config/triggers.yaml`. Validation lives with the setting — an inverted search-space range or a target recall above 1 is refused at startup rather than part-way through a paid HPO run.
 
 When the DS merges a change to `modeling` or `ml-common`, the MLE's `trainer` picks it up automatically (same workspace lock file). No coordination is required unless the function signatures change.
 

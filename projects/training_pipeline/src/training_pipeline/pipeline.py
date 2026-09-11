@@ -18,9 +18,11 @@ import argparse
 from google_cloud_pipeline_components.v1.batch_predict_job import ModelBatchPredictOp
 from google_cloud_pipeline_components.v1.model import ModelGetOp
 from kfp import compiler, dsl
-from modeling import config as ml_config
+from ml_common.config import get_settings as get_ml_settings
+from modeling.config import get_settings as get_modeling_settings
 
 from training_pipeline import resources
+from training_pipeline.settings_env import settings_env
 from training_pipeline.tasks import build_tasks
 
 
@@ -33,6 +35,17 @@ def build_pipeline(trainer_image: str, post_training_image: str, serving_image: 
     Model.
     """
     tasks = build_tasks(trainer_image, post_training_image)
+    ml_settings = get_ml_settings()
+    modeling_settings = get_modeling_settings()
+    # Every stage reads ml_common.config; only the trainer stages read modeling.config.
+    shared_env = settings_env(ml_settings)
+    trainer_env = shared_env | settings_env(modeling_settings)
+
+    def pin(task, env: dict[str, str]):
+        """Freeze the settings this pipeline was compiled with onto a task's container."""
+        for name, value in env.items():
+            task.set_env_variable(name, value)
+        return task
 
     @dsl.pipeline(name="churn-training-pipeline")
     def churn_training_pipeline(
@@ -41,32 +54,33 @@ def build_pipeline(trainer_image: str, post_training_image: str, serving_image: 
         batch_test_gcs_prefix: str,
         serving_image_uri: str,
         batch_predict_service_account: str,
-        bq_features_table: str = ml_config.BQ_FEATURES_TABLE,
-        model_display_name: str = ml_config.MODEL_DISPLAY_NAME,
-        experiment_name: str = ml_config.MODEL_DISPLAY_NAME,
-        consecutive_rejection_key: str = ml_config.CONSECUTIVE_REJECTION_KEY,
+        bq_features_table: str = ml_settings.bq_features_table,
+        model_display_name: str = ml_settings.model_display_name,
+        experiment_name: str = ml_settings.model_display_name,
+        consecutive_rejection_key: str = ml_settings.consecutive_rejection_key,
         snapshot_date: str = "",
         region: str = "europe-west1",
-        n_trials: int = ml_config.HPO_N_TRIALS,
-        n_folds: int = ml_config.HPO_N_FOLDS,
+        n_trials: int = modeling_settings.hpo_n_trials,
+        n_folds: int = modeling_settings.hpo_n_folds,
     ):
         """Pipeline: export → HPO → train → batch-predict → evaluate → register → notify."""
         # Freeze a stratified train/test split of the BigQuery features table into
         # ml.split_assignments. Caching disabled: the whole point of a drift-triggered retrain
         # is to re-split whatever the feature table currently holds, which KFP's cache key
         # (bq_features_table's literal string, not its contents) can't see has changed.
-        data_split_task = (
+        data_split_task = pin(
             tasks.data_split(
                 project_id=project_id,
                 bq_features_table=bq_features_table,
                 snapshot_date=snapshot_date,
             )
             .set_display_name("data-split")
-            .set_caching_options(False)
+            .set_caching_options(False),
+            trainer_env,
         )
 
         # Search for the best hyperparameters via cross-validated trials.
-        hpo_task = (
+        hpo_task = pin(
             tasks.hpo(
                 project_id=project_id,
                 region=region,
@@ -77,11 +91,12 @@ def build_pipeline(trainer_image: str, post_training_image: str, serving_image: 
             )
             .set_cpu_limit(resources.HPO_CPU_LIMIT)
             .set_memory_limit(resources.HPO_MEMORY_LIMIT)
-            .set_display_name("hpo-challenger")
+            .set_display_name("hpo-challenger"),
+            trainer_env,
         )
 
         # Train the challenger model on the full training set using the tuned params.
-        train_task = (
+        train_task = pin(
             tasks.train(
                 project_id=project_id,
                 region=region,
@@ -93,31 +108,36 @@ def build_pipeline(trainer_image: str, post_training_image: str, serving_image: 
             )
             .set_cpu_limit(resources.TRAIN_CPU_LIMIT)
             .set_memory_limit(resources.TRAIN_MEMORY_LIMIT)
-            .set_display_name("train-challenger")
+            .set_display_name("train-challenger"),
+            trainer_env,
         )
 
         # Look up the current champion (if any). Caching disabled: a cache hit here would
         # return whichever model was champion the last time this ran, even if a different
         # pipeline run has since promoted a new one — silently gating the challenger against
         # a stale champion instead of the real current one.
-        fetch_champion_task = (
+        fetch_champion_task = pin(
             tasks.fetch_champion_name(
                 project_id=project_id,
                 region=region,
                 model_display_name=model_display_name,
             )
             .set_display_name("fetch-champion-name")
-            .set_caching_options(False)
+            .set_caching_options(False),
+            shared_env,
         )
 
         # Materialize the test set and export it as GCS JSONL for batch scoring of both challenger
         # and champion — see tasks.prep_test_batch_data for why a physical materialization (and GCS,
         # not BigQuery, as the Batch Prediction source) is needed.
-        prep_test_batch_data_task = tasks.prep_test_batch_data(
-            project_id=project_id,
-            test_uri=data_split_task.outputs["test_uri"],
-            batch_test_gcs_prefix=batch_test_gcs_prefix,
-        ).set_display_name("prep-test-batch-data")
+        prep_test_batch_data_task = pin(
+            tasks.prep_test_batch_data(
+                project_id=project_id,
+                test_uri=data_split_task.outputs["test_uri"],
+                batch_test_gcs_prefix=batch_test_gcs_prefix,
+            ).set_display_name("prep-test-batch-data"),
+            shared_env,
+        )
 
         # Score the champion through its own registered serving container via Vertex AI Batch
         # Prediction, rather than loading it in-process: each registered model permanently
@@ -225,34 +245,44 @@ def build_pipeline(trainer_image: str, post_training_image: str, serving_image: 
 
         # Evaluate the challenger against the current champion using each one's own serving-image
         # predictions — no separate in-process scoring pass that could drift from production.
-        evaluate_task = tasks.evaluate(
-            project_id=project_id,
-            test_uri=data_split_task.outputs["test_uri"],
-            challenger_uri=train_task.outputs["model_uri"],
-            challenger_predictions_dir=challenger_predictions_dir,
-            champion_predictions_dir=champion_predictions_dir,
-            champion_shap=fetch_champion_task.outputs["champion_shap"],
-            champion_threshold=fetch_champion_task.outputs["champion_threshold"],
-        ).set_display_name("evaluate-challenger")
+        # pin(): the promotion gate's thresholds are read from ML_PR_AUC_MIN_DELTA /
+        # ML_F1_MIN_DELTA inside this container, so the gate a run was judged by is fixed at
+        # compile time and visible in the pipeline spec rather than baked into the image.
+        evaluate_task = pin(
+            tasks.evaluate(
+                project_id=project_id,
+                test_uri=data_split_task.outputs["test_uri"],
+                challenger_uri=train_task.outputs["model_uri"],
+                challenger_predictions_dir=challenger_predictions_dir,
+                champion_predictions_dir=champion_predictions_dir,
+                champion_shap=fetch_champion_task.outputs["champion_shap"],
+                champion_threshold=fetch_champion_task.outputs["champion_threshold"],
+            ).set_display_name("evaluate-challenger"),
+            shared_env,
+        )
 
         # Promote the challenger to champion or reject it based on the evaluation decision.
-        register_task = tasks.register_or_reject(
-            metrics=evaluate_task.outputs["metrics"],
-            decision=evaluate_task.outputs["decision"],
-            challenger_uri=train_task.outputs["model_uri"],
-            serving_image_uri=serving_image_uri,
-            project_id=project_id,
-            region=region,
-            model_display_name=model_display_name,
-            experiment_name=experiment_name,
-            consecutive_rejection_key=consecutive_rejection_key,
-        ).set_display_name("register-or-reject")
+        register_task = pin(
+            tasks.register_or_reject(
+                metrics=evaluate_task.outputs["metrics"],
+                decision=evaluate_task.outputs["decision"],
+                challenger_uri=train_task.outputs["model_uri"],
+                serving_image_uri=serving_image_uri,
+                project_id=project_id,
+                region=region,
+                model_display_name=model_display_name,
+                experiment_name=experiment_name,
+                consecutive_rejection_key=consecutive_rejection_key,
+            ).set_display_name("register-or-reject"),
+            shared_env,
+        )
 
         # Report the final outcome. Logging-only: the DAG keeps a single terminal step where a
         # real deployment would hand the event off to a consumer, but nothing is published.
-        tasks.notify(
-            message=register_task.outputs["result"],
-        ).set_display_name("notify")
+        pin(
+            tasks.notify(message=register_task.outputs["result"]).set_display_name("notify"),
+            shared_env,
+        )
 
     return churn_training_pipeline
 

@@ -1,0 +1,20 @@
+# Server flags that must hold for any invocation live in dashboard/serve.py, which builds
+# the argv Cloud Run starts. This file carries only presentation, so that a local
+# `streamlit run` looks like production without having to replicate those flags.
+
+[theme]
+# Follows the viewer's OS preference. charts.py ships validated colour steps for both
+# surfaces and picks between them at runtime via st.context.theme, so neither mode is an
+# automatic flip of the other.
+base = "light"
+font = "sans-serif"
+
+[client]
+# A Python traceback in front of a business user is noise they cannot act on and a small
+# information leak (table names, project layout). Failures still reach Cloud Logging in
+# full via obs_common's structured handler.
+showErrorDetails = "none"
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

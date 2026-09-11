@@ -39,7 +39,6 @@ on the fly — it has no pyproject.toml and is not part of the repo's uv workspa
 # ///
 
 import argparse
-import json
 import os
 import tempfile
 
@@ -47,13 +46,17 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from google.cloud import aiplatform, bigquery, storage
-from ml_common.config import (
+from ml_common.config import get_settings
+from ml_common.contracts import (
     CHURN_PROBABILITY_FIELD,
-    MODEL_DISPLAY_NAME,
-    SPLIT_ASSIGNMENTS_TABLE,
+    BaselineSpec,
+    ModelMetadata,
+    to_json,
 )
 from ml_common.drift import compute_baseline_stats
 from ml_common.preprocess import prepare_features
+
+SETTINGS = get_settings()
 
 
 def fetch_champion(model_display_name: str):
@@ -73,7 +76,7 @@ def read_training_split(project_id: str, snapshot_date: str) -> pd.DataFrame:
         bq.query(
             f"""
             SELECT * EXCEPT (split, assigned_at)
-            FROM `{project_id}.{SPLIT_ASSIGNMENTS_TABLE}`
+            FROM `{project_id}.{SETTINGS.split_assignments_table}`
             WHERE snapshot_date = @snapshot_date AND split = 'train'
             """,
             job_config=bigquery.QueryJobConfig(
@@ -87,7 +90,7 @@ def read_training_split(project_id: str, snapshot_date: str) -> pd.DataFrame:
     )
 
 
-def resolve_snapshot_date(project_id: str, champion, metadata: dict) -> str:
+def resolve_snapshot_date(project_id: str, champion, metadata: ModelMetadata) -> str:
     """Determine which split_assignments partition the champion actually trained on.
 
     Models trained after training_snapshot_date was added to metadata.json say so directly.
@@ -95,16 +98,15 @@ def resolve_snapshot_date(project_id: str, champion, metadata: dict) -> str:
     registration date — every training run writes a partition, rejected challengers
     included, so the newest partition overall is often some later run's, not this one's.
     """
-    recorded = metadata.get("training_snapshot_date")
-    if recorded:
-        return str(recorded)
+    if metadata.training_snapshot_date:
+        return metadata.training_snapshot_date
 
     bq = bigquery.Client(project=project_id)
     row = next(
         bq.query(
             f"""
             SELECT MAX(snapshot_date) AS d
-            FROM `{project_id}.{SPLIT_ASSIGNMENTS_TABLE}`
+            FROM `{project_id}.{SETTINGS.split_assignments_table}`
             WHERE snapshot_date <= DATE(@registered_at)
             """,
             job_config=bigquery.QueryJobConfig(
@@ -126,21 +128,23 @@ def resolve_snapshot_date(project_id: str, champion, metadata: dict) -> str:
     return str(row["d"])
 
 
-def read_metadata(artifact_uri: str) -> dict:
-    """Download an artifact directory's metadata.json."""
+def read_metadata(artifact_uri: str) -> ModelMetadata:
+    """Download and validate an artifact directory's metadata.json."""
     bucket_name, _, prefix = artifact_uri.removeprefix("gs://").partition("/")
     blob = storage.Client().bucket(bucket_name).blob(f"{prefix}/metadata.json")
-    return json.loads(blob.download_as_text())
+    return ModelMetadata.model_validate_json(blob.download_as_text())
 
 
-def write_metadata(artifact_uri: str, metadata: dict) -> None:
+def write_metadata(artifact_uri: str, metadata: ModelMetadata) -> None:
     """Overwrite an artifact directory's metadata.json."""
     bucket_name, _, prefix = artifact_uri.removeprefix("gs://").partition("/")
     blob = storage.Client().bucket(bucket_name).blob(f"{prefix}/metadata.json")
-    blob.upload_from_string(json.dumps(metadata), content_type="application/json")
+    blob.upload_from_string(to_json(metadata), content_type="application/json")
 
 
-def _rebuild_score_baseline(artifact_uri: str, X: pd.DataFrame, previous_spec: dict) -> dict:
+def _rebuild_score_baseline(
+    artifact_uri: str, X: pd.DataFrame, previous_spec: BaselineSpec
+) -> BaselineSpec:
     """Recompute the training-time churn_probability distribution by rescoring the model.
 
     The score baseline is the distribution of the model's own predictions on its training
@@ -165,11 +169,11 @@ def _rebuild_score_baseline(artifact_uri: str, X: pd.DataFrame, previous_spec: d
     scores = pd.DataFrame({CHURN_PROBABILITY_FIELD: model.predict_proba(X)[:, 1]})
     rebuilt = compute_baseline_stats(scores)[CHURN_PROBABILITY_FIELD]
 
-    frozen_edges = previous_spec.get("bin_edges")
-    if rebuilt["type"] != "numeric" or frozen_edges is None:
+    frozen_edges = getattr(previous_spec, "bin_edges", None)
+    if rebuilt.type != "numeric" or not frozen_edges:
         return rebuilt  # nothing comparable to verify against; the recomputed spec is still right
 
-    if not np.allclose(rebuilt["bin_edges"], frozen_edges, rtol=1e-3, atol=1e-4, equal_nan=True):
+    if not np.allclose(rebuilt.bin_edges, frozen_edges, rtol=1e-3, atol=1e-4, equal_nan=True):
         print(
             "  WARNING: rescored churn_probability does not reproduce the frozen bin edges; "
             "keeping the existing spec (score drift stays unmonitored until the next retrain)."
@@ -184,15 +188,17 @@ def rebuild(project_id: str, region: str, snapshot_date: str | None, dry_run: bo
     """Recompute baseline_stats from the frozen training split and rewrite metadata.json."""
     aiplatform.init(project=project_id, location=region)
 
-    champion = fetch_champion(MODEL_DISPLAY_NAME)
+    champion = fetch_champion(SETTINGS.model_display_name)
     if champion is None:
-        raise SystemExit(f"No model labelled role=champion found for {MODEL_DISPLAY_NAME}.")
+        raise SystemExit(
+            f"No model labelled role=champion found for {SETTINGS.model_display_name}."
+        )
 
     metadata = read_metadata(champion.uri)
     snapshot_date = snapshot_date or resolve_snapshot_date(project_id, champion, metadata)
     print(f"Champion:       {champion.resource_name}")
     print(f"Artifact URI:   {champion.uri}")
-    print(f"Training split: {SPLIT_ASSIGNMENTS_TABLE} @ {snapshot_date}")
+    print(f"Training split: {SETTINGS.split_assignments_table} @ {snapshot_date}")
 
     df = read_training_split(project_id, snapshot_date)
     if df.empty:
@@ -202,25 +208,20 @@ def rebuild(project_id: str, region: str, snapshot_date: str | None, dry_run: bo
     # Reproduce the training-time column set exactly rather than trusting whatever columns
     # the split table happens to carry: a baseline keyed on different columns than the model
     # was trained on would not line up with what the drift monitor reindexes to at check time.
-    X = X[metadata["feature_names"]]
+    X = X[metadata.feature_names]
 
     baseline_stats = compute_baseline_stats(X)
 
-    previous_score_spec = metadata["baseline_stats"].get(CHURN_PROBABILITY_FIELD)
+    previous_score_spec = metadata.baseline_stats.get(CHURN_PROBABILITY_FIELD)
     if previous_score_spec is not None:
         baseline_stats[CHURN_PROBABILITY_FIELD] = _rebuild_score_baseline(
             champion.uri, X, previous_score_spec
         )
 
-    unmonitored = sorted(c for c, spec in baseline_stats.items() if not spec.get("monitored"))
+    unmonitored = sorted(c for c, spec in baseline_stats.items() if not spec.is_monitored)
     print(f"\nRebuilt {len(baseline_stats)} feature baselines from {len(X)} training rows.")
     for col, spec in sorted(baseline_stats.items()):
-        buckets = (
-            len(spec["frequencies"])
-            if spec["type"] in ("categorical", "discrete")
-            else len(spec["bin_edges"]) - 1
-        )
-        print(f"  {col:38s} {spec['type']:12s} buckets={buckets}")
+        print(f"  {col:38s} {spec.type:12s} buckets={spec.value_cardinality}")
     if unmonitored:
         print(f"\nNo usable drift signal (will be reported unmonitored): {', '.join(unmonitored)}")
 
@@ -228,8 +229,7 @@ def rebuild(project_id: str, region: str, snapshot_date: str | None, dry_run: bo
         print("\n--dry-run: metadata.json not written.")
         return
 
-    metadata["baseline_stats"] = baseline_stats
-    write_metadata(champion.uri, metadata)
+    write_metadata(champion.uri, metadata.model_copy(update={"baseline_stats": baseline_stats}))
     print(f"\nWrote {champion.uri}/metadata.json")
 
 

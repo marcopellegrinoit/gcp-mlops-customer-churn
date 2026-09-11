@@ -3,8 +3,10 @@ name = "training-pipeline"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    # DS package for HPO/fold defaults — resolved as a workspace path dependency.
+    # DS packages for the pipeline's compile-time defaults, and for settings_env, which
+    # pins the policy a pipeline was compiled with onto each task's container.
     "modeling",
+    "ml-common",
     # KFP v2 SDK: compile and submit pipelines to Vertex AI Pipelines.
     "kfp>=2.0.0,<3",
     # Prebuilt Vertex AI ops (ModelGetOp, ModelBatchPredictOp) for the champion batch-predict branch.
@@ -19,6 +21,7 @@ dev = [
 
 [tool.uv.sources]
 modeling = { workspace = true }
+ml-common = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

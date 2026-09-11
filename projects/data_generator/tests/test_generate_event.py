@@ -10,18 +10,21 @@ from data_generator.main import (
     _ANOMALY_PAYMENT_ATTEMPTS_MAX,
     _ANOMALY_PAYMENT_ATTEMPTS_MIN,
     _ANOMALY_TRANSACTIONS,
-    _CHANNELS,
     _CHURN_HIGH_ENGAGEMENT_THRESHOLD,
     _CHURN_HIGH_PAYMENT_THRESHOLD,
     _CHURN_PROB_HIGH,
     _CHURN_PROB_LOW,
-    _EVENT_TYPES,
-    _PAYMENT_STATUSES,
-    _REGIONS,
-    _TIERS,
     CustomerProfile,
     _create_customer_pool,
     _generate_event,
+)
+from data_generator.schema import (
+    ActivityCdcRow,
+    Channel,
+    EventType,
+    MembershipTier,
+    PaymentStatus,
+    Region,
 )
 
 _ALL_FIELDS = frozenset(
@@ -53,34 +56,39 @@ _CORE_FIELDS = _ALL_FIELDS - {"raw_payload", "anomaly_injected"}
 
 
 class TestSchema:
-    def test_normal_event_has_all_fields(self, customer_pool, rng):
+    def test_row_declares_exactly_the_bigquery_columns(self):
+        # raw.activity_cdc's schema in iac/config/bigquery.yaml, field for field. A column
+        # added on one side and not the other fails the streaming insert at runtime.
+        assert set(ActivityCdcRow.model_fields) == _ALL_FIELDS
+
+    def test_normal_event_serializes_every_column(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng, anomaly=False)
-        assert _ALL_FIELDS.issubset(event.keys())
+        assert set(event.to_bigquery_row()) == _ALL_FIELDS
 
-    def test_anomaly_event_has_all_fields(self, customer_pool, rng):
+    def test_anomaly_event_serializes_every_column(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng, anomaly=True)
-        assert _ALL_FIELDS.issubset(event.keys())
-
-    def test_no_extra_fields(self, customer_pool, rng):
-        event = _generate_event(customer_pool, rng)
-        assert set(event.keys()) == _ALL_FIELDS
+        assert set(event.to_bigquery_row()) == _ALL_FIELDS
 
     def test_event_id_is_valid_uuid(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        uuid.UUID(event["event_id"])  # raises ValueError if malformed
+        uuid.UUID(event.event_id)  # raises ValueError if malformed
 
-    def test_event_timestamp_is_utc_isoformat(self, customer_pool, rng):
+    def test_event_timestamp_is_utc(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        parsed = datetime.fromisoformat(event["event_timestamp"])
+        assert event.event_timestamp.tzinfo is not None
+
+    def test_serialized_timestamp_round_trips(self, customer_pool, rng):
+        event = _generate_event(customer_pool, rng)
+        parsed = datetime.fromisoformat(event.to_bigquery_row()["event_timestamp"])
         assert parsed.tzinfo is not None
 
     def test_churned_is_bool(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        assert isinstance(event["churned"], bool)
+        assert isinstance(event.churned, bool)
 
     def test_anomaly_injected_is_bool(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        assert isinstance(event["anomaly_injected"], bool)
+        assert isinstance(event.anomaly_injected, bool)
 
 
 # ---------------------------------------------------------------------------
@@ -91,27 +99,27 @@ class TestSchema:
 class TestEnumConstraints:
     def test_event_type_in_valid_set(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        assert event["event_type"] in _EVENT_TYPES
+        assert event.event_type in set(EventType)
 
     def test_region_in_valid_set(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        assert event["region"] in _REGIONS
+        assert event.region in set(Region)
 
     def test_membership_tier_in_valid_set(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        assert event["membership_tier"] in _TIERS
+        assert event.membership_tier in set(MembershipTier)
 
     def test_payment_status_in_valid_set(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        assert event["payment_status"] in _PAYMENT_STATUSES
+        assert event.payment_status in set(PaymentStatus)
 
     def test_channel_in_valid_set(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        assert event["channel"] in _CHANNELS
+        assert event.channel in set(Channel)
 
     def test_customer_id_from_pool(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        assert event["customer_id"] in customer_pool
+        assert event.customer_id in customer_pool
 
 
 # ---------------------------------------------------------------------------
@@ -124,26 +132,26 @@ class TestNormalValues:
         rng = np.random.default_rng(seed=0)
         for _ in range(300):
             event = _generate_event(customer_pool, rng, anomaly=False)
-            assert event["monthly_transaction"] >= 0.0
+            assert event.monthly_transaction >= 0.0
 
     def test_engagement_score_in_unit_interval(self, customer_pool):
         rng = np.random.default_rng(seed=0)
         for _ in range(300):
             event = _generate_event(customer_pool, rng, anomaly=False)
-            score = event["engagement_score"]
+            score = event.engagement_score
             assert score is None or 0.0 <= score <= 1.0
 
     def test_payment_attempts_non_negative(self, customer_pool):
         rng = np.random.default_rng(seed=0)
         for _ in range(300):
             event = _generate_event(customer_pool, rng, anomaly=False)
-            assert event["payment_attempts_last_30d"] >= 0
+            assert event.payment_attempts_last_30d >= 0
 
     def test_contact_requests_non_negative(self, customer_pool):
         rng = np.random.default_rng(seed=0)
         for _ in range(300):
             event = _generate_event(customer_pool, rng, anomaly=False)
-            assert event["contact_requests_last_30d"] >= 0
+            assert event.contact_requests_last_30d >= 0
 
     def test_member_since_days_in_range(self, customer_pool):
         # Tenure now advances with elapsed time, so the ceiling is the join-time tenure
@@ -151,18 +159,18 @@ class TestNormalValues:
         rng = np.random.default_rng(seed=0)
         for _ in range(300):
             event = _generate_event(customer_pool, rng, anomaly=False, days_elapsed=0)
-            days = event["member_since_days"]
+            days = event.member_since_days
             assert days is None or 1 <= days <= 3650
 
     def test_member_since_days_advances_with_elapsed_time(self, customer_pool, rng):
         profile = next(p for p in customer_pool.values() if p.tenure_days_at_join is not None)
         at_join = _generate_event(customer_pool, rng, profile=profile, days_elapsed=0)
         later = _generate_event(customer_pool, rng, profile=profile, days_elapsed=100)
-        assert later["member_since_days"] == at_join["member_since_days"] + 100
+        assert later.member_since_days == at_join.member_since_days + 100
 
     def test_anomaly_injected_false(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng, anomaly=False)
-        assert event["anomaly_injected"] is False
+        assert event.anomaly_injected is False
 
 
 # ---------------------------------------------------------------------------
@@ -173,12 +181,12 @@ class TestNormalValues:
 class TestAnomalyValues:
     def test_anomaly_injected_true(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng, anomaly=True)
-        assert event["anomaly_injected"] is True
+        assert event.anomaly_injected is True
 
     def test_anomaly_transaction_from_known_set(self, customer_pool):
         rng = np.random.default_rng(seed=0)
         observed = {
-            _generate_event(customer_pool, rng, anomaly=True)["monthly_transaction"]
+            _generate_event(customer_pool, rng, anomaly=True).monthly_transaction
             for _ in range(100)
         }
         assert observed.issubset(set(_ANOMALY_TRANSACTIONS))
@@ -186,8 +194,7 @@ class TestAnomalyValues:
     def test_anomaly_engagement_from_known_set(self, customer_pool):
         rng = np.random.default_rng(seed=0)
         observed = {
-            _generate_event(customer_pool, rng, anomaly=True)["engagement_score"]
-            for _ in range(100)
+            _generate_event(customer_pool, rng, anomaly=True).engagement_score for _ in range(100)
         }
         assert observed.issubset(set(_ANOMALY_ENGAGEMENT_SCORES))
 
@@ -197,7 +204,7 @@ class TestAnomalyValues:
             event = _generate_event(customer_pool, rng, anomaly=True)
             assert (
                 _ANOMALY_PAYMENT_ATTEMPTS_MIN
-                <= event["payment_attempts_last_30d"]
+                <= event.payment_attempts_last_30d
                 <= _ANOMALY_PAYMENT_ATTEMPTS_MAX
             )
 
@@ -205,7 +212,7 @@ class TestAnomalyValues:
         """All three anomaly transaction values should appear across enough trials."""
         rng = np.random.default_rng(seed=0)
         observed = {
-            _generate_event(customer_pool, rng, anomaly=True)["monthly_transaction"]
+            _generate_event(customer_pool, rng, anomaly=True).monthly_transaction
             for _ in range(300)
         }
         assert observed == set(_ANOMALY_TRANSACTIONS)
@@ -213,8 +220,7 @@ class TestAnomalyValues:
     def test_anomaly_engagement_covers_all_values(self, customer_pool):
         rng = np.random.default_rng(seed=0)
         observed = {
-            _generate_event(customer_pool, rng, anomaly=True)["engagement_score"]
-            for _ in range(300)
+            _generate_event(customer_pool, rng, anomaly=True).engagement_score for _ in range(300)
         }
         assert observed == set(_ANOMALY_ENGAGEMENT_SCORES)
 
@@ -227,31 +233,31 @@ class TestAnomalyValues:
 class TestRawPayload:
     def test_raw_payload_is_valid_json(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        parsed = json.loads(event["raw_payload"])
+        parsed = json.loads(event.raw_payload)
         assert isinstance(parsed, dict)
 
     def test_raw_payload_contains_core_fields(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        payload = json.loads(event["raw_payload"])
+        payload = json.loads(event.raw_payload)
         assert _CORE_FIELDS.issubset(payload.keys())
 
     def test_raw_payload_excludes_itself(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        payload = json.loads(event["raw_payload"])
+        payload = json.loads(event.raw_payload)
         assert "raw_payload" not in payload
 
     def test_raw_payload_excludes_anomaly_injected(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        payload = json.loads(event["raw_payload"])
+        payload = json.loads(event.raw_payload)
         assert "anomaly_injected" not in payload
 
     def test_raw_payload_values_consistent_with_event(self, customer_pool, rng):
         event = _generate_event(customer_pool, rng)
-        payload = json.loads(event["raw_payload"])
-        assert payload["event_id"] == event["event_id"]
-        assert payload["customer_id"] == event["customer_id"]
-        assert payload["monthly_transaction"] == event["monthly_transaction"]
-        assert payload["engagement_score"] == event["engagement_score"]
+        payload = json.loads(event.raw_payload)
+        assert payload["event_id"] == event.event_id
+        assert payload["customer_id"] == event.customer_id
+        assert payload["monthly_transaction"] == event.monthly_transaction
+        assert payload["engagement_score"] == event.engagement_score
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +283,7 @@ class TestChurnLogic:
         rng = np.random.default_rng(seed=7)
         trials = 4000
         churned = sum(
-            _generate_event(customer_pool, rng, anomaly=True)["churned"] for _ in range(trials)
+            _generate_event(customer_pool, rng, anomaly=True).churned for _ in range(trials)
         )
         churn_rate = churned / trials
         assert 0.5 * _CHURN_PROB_HIGH < churn_rate < 2.0 * _CHURN_PROB_HIGH, (
@@ -295,18 +301,18 @@ class TestChurnLogic:
         safe_events = []
         for _ in range(60000):
             e = _generate_event(customer_pool, rng, anomaly=False)
-            profile = customer_pool[e["customer_id"]]
+            profile = customer_pool[e.customer_id]
             if (
-                e["engagement_score"] is not None
-                and e["engagement_score"] >= _CHURN_HIGH_ENGAGEMENT_THRESHOLD
-                and e["payment_attempts_last_30d"] <= _CHURN_HIGH_PAYMENT_THRESHOLD
+                e.engagement_score is not None
+                and e.engagement_score >= _CHURN_HIGH_ENGAGEMENT_THRESHOLD
+                and e.payment_attempts_last_30d <= _CHURN_HIGH_PAYMENT_THRESHOLD
                 and not profile.always_fails_payments
             ):
                 safe_events.append(e)
             if len(safe_events) >= 8000:
                 break
 
-        churn_rate = sum(e["churned"] for e in safe_events) / len(safe_events)
+        churn_rate = sum(e.churned for e in safe_events) / len(safe_events)
         assert 0.0 < churn_rate < 3.0 * _CHURN_PROB_LOW, (
             f"Expected ~{_CHURN_PROB_LOW:.1%} churn for low-risk events, got {churn_rate:.2%}"
         )
@@ -354,7 +360,7 @@ class TestMissingValues:
         pool = _make_pool(_offline_profile())
         for _ in range(30):
             event = _generate_event(pool, rng, anomaly=False)
-            assert event["engagement_score"] is None
+            assert event.engagement_score is None
 
     def test_online_customer_always_has_engagement(self):
         """Online customers always produce a numeric engagement_score."""
@@ -373,7 +379,7 @@ class TestMissingValues:
         )
         for _ in range(30):
             event = _generate_event(pool, rng, anomaly=False)
-            assert event["engagement_score"] is not None
+            assert event.engagement_score is not None
 
     def test_always_fails_customer_never_has_successful_payment(self):
         """Customers flagged always_fails_payments never produce payment_status='success' (MNAR)."""
@@ -381,7 +387,7 @@ class TestMissingValues:
         pool = _make_pool(_failing_profile())
         for _ in range(50):
             event = _generate_event(pool, rng, anomaly=False)
-            assert event["payment_status"] != "success"
+            assert event.payment_status != PaymentStatus.SUCCESS
 
     def test_member_since_days_can_be_null(self):
         """Customers with no recorded start date produce member_since_days=None (MCAR)."""
@@ -400,7 +406,7 @@ class TestMissingValues:
         )
         for _ in range(10):
             event = _generate_event(pool, rng, anomaly=False)
-            assert event["member_since_days"] is None
+            assert event.member_since_days is None
 
     def test_anomaly_overrides_offline_engagement(self):
         """Anomaly injection always sets a numeric engagement_score, even for offline customers."""
@@ -408,7 +414,7 @@ class TestMissingValues:
         pool = _make_pool(_offline_profile())
         for _ in range(30):
             event = _generate_event(pool, rng, anomaly=True)
-            assert event["engagement_score"] in _ANOMALY_ENGAGEMENT_SCORES
+            assert event.engagement_score in _ANOMALY_ENGAGEMENT_SCORES
 
     def test_offline_pool_produces_null_engagement_at_expected_rate(self):
         """With ~33% offline channels, roughly a third of events should have null engagement."""
@@ -417,7 +423,7 @@ class TestMissingValues:
 
         rng2 = np.random.default_rng(seed=1)
         events = [_generate_event(pool, rng2, anomaly=False) for _ in range(500)]
-        null_fraction = sum(1 for e in events if e["engagement_score"] is None) / len(events)
+        null_fraction = sum(1 for e in events if e.engagement_score is None) / len(events)
 
         # null rate should be close to the offline customer fraction
         assert abs(null_fraction - offline_fraction) < 0.10
@@ -457,8 +463,8 @@ class TestStableIdentity:
         # region on every event and customer_features read whichever came last.
         profile = next(iter(customer_pool.values()))
         events = [_generate_event(customer_pool, rng, profile=profile) for _ in range(50)]
-        assert {e["membership_tier"] for e in events} == {profile.membership_tier}
-        assert {e["region"] for e in events} == {profile.region}
+        assert {e.membership_tier for e in events} == {profile.membership_tier}
+        assert {e.region for e in events} == {profile.region}
 
 
 # ---------------------------------------------------------------------------
@@ -470,11 +476,11 @@ class TestChurnSemantics:
     def test_churned_events_are_cancellations(self, customer_pool):
         rng = np.random.default_rng(seed=0)
         events = [_generate_event(customer_pool, rng) for _ in range(2000)]
-        churned = [e for e in events if e["churned"]]
+        churned = [e for e in events if e.churned]
         assert churned, "expected at least one churn in 2000 events"
-        assert all(e["event_type"] == "membership_cancelled" for e in churned)
+        assert all(e.event_type == "membership_cancelled" for e in churned)
 
     def test_active_events_are_never_cancellations(self, customer_pool):
         rng = np.random.default_rng(seed=0)
         events = [_generate_event(customer_pool, rng) for _ in range(2000)]
-        assert all(e["event_type"] != "membership_cancelled" for e in events if not e["churned"])
+        assert all(e.event_type != "membership_cancelled" for e in events if not e.churned)

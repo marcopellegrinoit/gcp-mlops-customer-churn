@@ -47,6 +47,44 @@ terraform -chdir=iac apply -target='google_project_service.apis["secretmanager.g
 **3. Create the Cloud Build GitHub connection**
 Navigate to **Cloud Build → Settings → Repositories (2nd gen)** in the GCP Console and create a new connection linked to your GitHub account via OAuth. Note the connection name you assign — you will need it in the next step.
 
+**4. Create the dashboard's OAuth client (IAP)**
+
+Skip this if your project belongs to a Cloud organization — IAP will use its Google-managed
+OAuth client and nothing is needed. **A standalone project must do this**, because the
+managed client only admits "users within the organization in which the resource is
+contained", and a project with no organization has no such set. IAP then has no client at
+all and every request to the dashboard returns `502 — Empty Google Account OAuth client
+ID(s)/secret(s)`.
+
+This step is manual for the same reason the GitHub connection above is: it cannot be
+automated. The IAP OAuth Admin APIs (`google_iap_brand`, `google_iap_client`,
+`gcloud iap oauth-brands`) were permanently shut down in March 2026, and they rejected
+projects without an organization even before that.
+
+1. **Configure the consent screen** — **APIs & Services → OAuth consent screen** (recent
+   consoles show this as **Google Auth Platform → Branding**). Choose
+   **External** (Internal requires an organization). Set an app name and support email.
+2. **Add yourself as a test user** (**Audience → Test users**). An External consent screen
+   starts in *Testing* mode, and
+   in that mode only listed test users can sign in — including you. Skipping this produces
+   an access-denied screen that looks exactly like a misconfigured IAM binding.
+3. **Create the client** — **APIs & Services → Credentials → Create credentials → OAuth
+   client ID → Web application** (or **Google Auth Platform → Clients**). Save it, then
+   reopen it and add the authorized redirect URI, which embeds the client's own ID:
+
+   ```
+   https://iap.googleapis.com/v1/oauth/clientIds/YOUR_CLIENT_ID:handleRedirect
+   ```
+
+4. **Hand the credentials to Terraform** in `iac/terraform.tfvars` (gitignored):
+
+   ```hcl
+   dashboard_oauth_client_id     = "1234567890-abc.apps.googleusercontent.com"
+   dashboard_oauth_client_secret = "GOCSPX-..."
+   ```
+
+Terraform attaches them to IAP via `google_iap_settings`; see [dashboard.md](dashboard.md#authentication).
+
 ---
 
 ## Configure & Apply Terraform
@@ -58,6 +96,14 @@ Edit `iac/terraform.tfvars`:
 project_id  = "your-gcp-project-id"
 region      = "europe-west1"
 alert_email = "you@example.com"
+
+# Who may open the churn dashboard through IAP. Defaults to [] — the service deploys
+# reachable by nobody. A group is the intended form; see dashboard.md.
+dashboard_viewers = ["group:retention-team@example.com"]
+
+# Only for a project with no Cloud organization — see step 4 above.
+dashboard_oauth_client_id     = ""
+dashboard_oauth_client_secret = ""
 ```
 
 **2. Set the GitHub connection name**

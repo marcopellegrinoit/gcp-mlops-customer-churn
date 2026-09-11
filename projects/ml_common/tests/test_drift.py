@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from ml_common.contracts import DiscreteBaseline, parse_baseline_stats
 from ml_common.drift import (
     compute_baseline_stats,
     compute_psi,
@@ -26,10 +27,10 @@ def baseline_df() -> pd.DataFrame:
 
 def test_compute_baseline_stats_numeric_and_categorical(baseline_df):
     stats = compute_baseline_stats(baseline_df)
-    assert stats["avg_transaction_30d"]["type"] == "numeric"
-    assert len(stats["avg_transaction_30d"]["bin_edges"]) > 1
-    assert stats["membership_tier"]["type"] == "categorical"
-    assert pytest.approx(sum(stats["membership_tier"]["frequencies"].values()), abs=1e-9) == 1.0
+    assert stats["avg_transaction_30d"].type == "numeric"
+    assert len(stats["avg_transaction_30d"].bin_edges) > 1
+    assert stats["membership_tier"].type == "categorical"
+    assert pytest.approx(sum(stats["membership_tier"].frequencies.values()), abs=1e-9) == 1.0
 
 
 def test_psi_zero_when_distribution_unchanged(baseline_df):
@@ -66,8 +67,8 @@ def test_psi_handles_unseen_category(baseline_df):
 def test_evaluate_drift_not_detected_when_stable(baseline_df):
     stats = compute_baseline_stats(baseline_df)
     result = evaluate_drift(stats, baseline_df, psi_threshold=0.2)
-    assert result["drift_detected"] is False
-    assert result["breached_features"] == {}
+    assert result.drift_detected is False
+    assert result.breached_features == {}
 
 
 def test_evaluate_drift_detected_when_shifted(baseline_df):
@@ -75,15 +76,15 @@ def test_evaluate_drift_detected_when_shifted(baseline_df):
     shifted = baseline_df.copy()
     shifted["avg_transaction_30d"] = shifted["avg_transaction_30d"] + 100
     result = evaluate_drift(stats, shifted, psi_threshold=0.2)
-    assert result["drift_detected"] is True
-    assert "avg_transaction_30d" in result["breached_features"]
+    assert result.drift_detected is True
+    assert "avg_transaction_30d" in result.breached_features
 
 
 def test_evaluate_drift_ignores_columns_missing_from_current(baseline_df):
     stats = compute_baseline_stats(baseline_df)
     partial = baseline_df.drop(columns=["membership_tier"])
     result = evaluate_drift(stats, partial, psi_threshold=0.2)
-    assert "membership_tier" not in result["feature_psi"]
+    assert "membership_tier" not in result.feature_psi
 
 
 def test_psi_numeric_handles_constant_baseline_column():
@@ -91,12 +92,9 @@ def test_psi_numeric_handles_constant_baseline_column():
     # frequency table is the single value — no bin edges are involved at all.
     constant_df = pd.DataFrame({"is_trial_account": [0.0] * 1000})
     stats = compute_baseline_stats(constant_df)
-    assert stats["is_trial_account"] == {
-        "type": "discrete",
-        "frequencies": {"0.0": 1.0},
-        "null_rate": 0.0,
-        "monitored": False,
-    }
+    assert stats["is_trial_account"] == DiscreteBaseline(
+        frequencies={"0.0": 1.0}, null_rate=0.0, monitored=False
+    )
     scores = compute_psi(stats, constant_df)
     assert scores["is_trial_account"] == 0.0
 
@@ -133,9 +131,9 @@ def test_no_drift_against_own_training_data(discrete_df):
     # breach against the exact rows it was built from — firing a retrain every night.
     stats = compute_baseline_stats(discrete_df)
     result = evaluate_drift(stats, discrete_df, psi_threshold=0.2)
-    assert result["drift_detected"] is False
-    assert result["breached_features"] == {}
-    assert result["unmonitored_features"] == []
+    assert result.drift_detected is False
+    assert result.breached_features == {}
+    assert result.unmonitored_features == []
 
 
 def test_no_drift_against_a_fresh_identically_distributed_sample(discrete_df):
@@ -147,7 +145,7 @@ def test_no_drift_against_a_fresh_identically_distributed_sample(discrete_df):
         }
     )
     stats = compute_baseline_stats(discrete_df)
-    assert evaluate_drift(stats, fresh, psi_threshold=0.2)["drift_detected"] is False
+    assert evaluate_drift(stats, fresh, psi_threshold=0.2).drift_detected is False
 
 
 def test_discrete_column_still_detects_a_real_shift(discrete_df):
@@ -155,23 +153,23 @@ def test_discrete_column_still_detects_a_real_shift(discrete_df):
     shifted = discrete_df.copy()
     shifted["renewal_count"] = shifted["renewal_count"] + 2  # every customer gains renewals
     result = evaluate_drift(stats, shifted, psi_threshold=0.2)
-    assert "renewal_count" in result["breached_features"]
+    assert "renewal_count" in result.breached_features
 
 
 def test_low_cardinality_numeric_uses_a_frequency_table(discrete_df):
     stats = compute_baseline_stats(discrete_df)
-    assert stats["renewal_count"]["type"] == "discrete"
-    assert "bin_edges" not in stats["renewal_count"]
+    assert stats["renewal_count"].type == "discrete"
+    assert not hasattr(stats["renewal_count"], "bin_edges")
     # Keys survive a metadata.json round-trip as strings.
-    assert set(stats["renewal_count"]["frequencies"]) == {"0.0", "1.0", "2.0", "3.0", "4.0"}
+    assert set(stats["renewal_count"].frequencies) == {"0.0", "1.0", "2.0", "3.0", "4.0"}
 
 
 def test_continuous_column_stores_measured_proportions(baseline_df):
     stats = compute_baseline_stats(baseline_df)
     spec = stats["avg_transaction_30d"]
-    assert spec["type"] == "numeric"
-    assert len(spec["expected_pct"]) == len(spec["bin_edges"]) - 1
-    assert pytest.approx(sum(spec["expected_pct"]), abs=1e-9) == 1.0
+    assert spec.type == "numeric"
+    assert len(spec.expected_pct) == len(spec.bin_edges) - 1
+    assert pytest.approx(sum(spec.expected_pct), abs=1e-9) == 1.0
 
 
 def test_constant_column_is_reported_unmonitored_not_healthy():
@@ -179,10 +177,10 @@ def test_constant_column_is_reported_unmonitored_not_healthy():
     # really means "no signal" — it must not be silently counted as a passing feature.
     constant_df = pd.DataFrame({"is_trial_account": [0.0] * 1000})
     stats = compute_baseline_stats(constant_df)
-    assert stats["is_trial_account"]["monitored"] is False
+    assert stats["is_trial_account"].monitored is False
     result = evaluate_drift(stats, constant_df, psi_threshold=0.2)
-    assert result["unmonitored_features"] == ["is_trial_account"]
-    assert result["drift_detected"] is False
+    assert result.unmonitored_features == ["is_trial_account"]
+    assert result.drift_detected is False
 
 
 def test_legacy_baseline_without_proportions_is_unmonitored():
@@ -192,8 +190,8 @@ def test_legacy_baseline_without_proportions_is_unmonitored():
     stats = {"avg_transaction_30d": {"type": "numeric", "bin_edges": [-np.inf, 10.0, np.inf]}}
     current = pd.DataFrame({"avg_transaction_30d": [500.0] * 1000})
     result = evaluate_drift(stats, current, psi_threshold=0.2)
-    assert result["unmonitored_features"] == ["avg_transaction_30d"]
-    assert result["drift_detected"] is False
+    assert result.unmonitored_features == ["avg_transaction_30d"]
+    assert result.drift_detected is False
 
 
 def test_noise_floor_raises_the_threshold_for_small_samples(baseline_df):
@@ -208,8 +206,8 @@ def test_small_sample_noise_does_not_trigger_drift(baseline_df):
     stats = compute_baseline_stats(baseline_df)
     tiny = baseline_df.sample(n=40, random_state=3)
     result = evaluate_drift(stats, tiny, psi_threshold=0.2)
-    assert result["feature_thresholds"]["avg_transaction_30d"] > 0.2
-    assert result["drift_detected"] is False
+    assert result.feature_thresholds["avg_transaction_30d"] > 0.2
+    assert result.drift_detected is False
 
 
 @pytest.fixture()
@@ -228,8 +226,8 @@ def nullable_df() -> pd.DataFrame:
 
 def test_baseline_records_null_rate(nullable_df):
     stats = compute_baseline_stats(nullable_df)
-    assert stats["avg_engagement_30d"]["null_rate"] == pytest.approx(0.20, abs=0.03)
-    assert stats["membership_tier"]["null_rate"] == 0.0
+    assert stats["avg_engagement_30d"].null_rate == pytest.approx(0.20, abs=0.03)
+    assert stats["membership_tier"].null_rate == 0.0
 
 
 def test_null_rate_shift_is_detected_when_present_values_are_unchanged(nullable_df):
@@ -244,10 +242,8 @@ def test_null_rate_shift_is_detected_when_present_values_are_unchanged(nullable_
 
     result = evaluate_drift(stats, shifted, psi_threshold=0.2)
 
-    assert "avg_engagement_30d" in result["breached_features"]
-    assert result["feature_null_rates"]["avg_engagement_30d"]["current"] == pytest.approx(
-        0.70, abs=0.04
-    )
+    assert "avg_engagement_30d" in result.breached_features
+    assert result.feature_null_rates["avg_engagement_30d"].current == pytest.approx(0.70, abs=0.04)
 
 
 def test_stable_null_rate_does_not_trigger_drift(nullable_df):
@@ -258,7 +254,7 @@ def test_stable_null_rate_does_not_trigger_drift(nullable_df):
     fresh = nullable_df.copy()
     fresh["avg_engagement_30d"] = engagement
 
-    assert evaluate_drift(stats, fresh, psi_threshold=0.2)["drift_detected"] is False
+    assert evaluate_drift(stats, fresh, psi_threshold=0.2).drift_detected is False
 
 
 def test_categorical_null_rate_is_tracked_separately_from_categories(nullable_df):
@@ -268,14 +264,14 @@ def test_categorical_null_rate_is_tracked_separately_from_categories(nullable_df
 
     result = evaluate_drift(stats, shifted, psi_threshold=0.2)
 
-    assert "membership_tier" in result["breached_features"]
-    assert result["feature_null_rates"]["membership_tier"]["current"] == pytest.approx(0.5)
+    assert "membership_tier" in result.breached_features
+    assert result.feature_null_rates["membership_tier"].current == pytest.approx(0.5)
 
 
 def test_all_null_column_is_unmonitored():
     stats = compute_baseline_stats(pd.DataFrame({"never_populated": [np.nan] * 500}))
-    assert stats["never_populated"]["null_rate"] == 1.0
-    assert stats["never_populated"]["monitored"] is False
+    assert stats["never_populated"].null_rate == 1.0
+    assert stats["never_populated"].monitored is False
 
 
 def test_legacy_baseline_without_null_rate_keeps_old_nan_handling():
@@ -284,8 +280,17 @@ def test_legacy_baseline_without_null_rate_keeps_old_nan_handling():
     stats = {"membership_tier": {"type": "categorical", "frequencies": {"friend": 1.0}}}
     current = pd.DataFrame({"membership_tier": ["friend"] * 1000})
     result = evaluate_drift(stats, current, psi_threshold=0.2)
-    assert result["feature_psi"]["membership_tier"] == pytest.approx(0.0, abs=1e-9)
-    assert result["feature_null_rates"] == {}
+    assert result.feature_psi["membership_tier"] == pytest.approx(0.0, abs=1e-9)
+    assert result.feature_null_rates == {}
+
+
+def test_legacy_dict_baselines_are_accepted_without_pre_parsing(nullable_df):
+    # Notebooks, fixtures and hand-built dicts pass raw JSON shapes straight in; the drift
+    # functions parse them, so a caller never has to know which form it is holding.
+    stats = compute_baseline_stats(nullable_df)
+    as_dicts = {col: spec.model_dump() for col, spec in stats.items()}
+    assert compute_psi(as_dicts, nullable_df) == compute_psi(stats, nullable_df)
+    assert parse_baseline_stats(as_dicts) == stats
 
 
 def test_noise_floor_spans_the_null_bucket(nullable_df):
@@ -293,3 +298,18 @@ def test_noise_floor_spans_the_null_bucket(nullable_df):
     # calibrated threshold would not apply to the PSI it is compared against.
     stats = compute_baseline_stats(nullable_df)
     assert psi_noise_floor(stats["avg_engagement_30d"], 200) > 0.0
+
+
+def test_null_rate_is_the_same_whichever_spelling_bigquery_returns():
+    # One BigQuery read yields both: pd.NA in the Int64/boolean columns the client's dtype
+    # defaults produce, NaN in the float64 ones. The drift path must not care which it got,
+    # or a feature's measured missingness would depend on its BigQuery column type.
+    extension = pd.DataFrame({"member_since_days": pd.array([100, None, 300] * 50, dtype="Int64")})
+    numpy_float = pd.DataFrame({"member_since_days": [100.0, np.nan, 300.0] * 50})
+
+    assert compute_baseline_stats(extension)["member_since_days"].null_rate == pytest.approx(
+        compute_baseline_stats(numpy_float)["member_since_days"].null_rate
+    )
+    assert compute_psi(compute_baseline_stats(extension), numpy_float)[
+        "member_since_days"
+    ] == pytest.approx(0.0, abs=1e-9)

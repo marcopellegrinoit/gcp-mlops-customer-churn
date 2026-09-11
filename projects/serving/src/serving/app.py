@@ -9,35 +9,37 @@ THRESHOLD is passed as a container env var at BatchPredictionJob creation time
 (read from the champion model's registry metadata, set by register_or_reject) —
 the same decision threshold used during the evaluate stage, applied identically
 at serving time.
+
+The request and response bodies are ml_common.contracts models, so what this container
+emits is the same declared shape post_training.evaluate parses back out of the Batch
+Prediction output when it decides whether to promote a model.
 """
 
 from contextlib import asynccontextmanager
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from ml_common.config import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
+from fastapi import FastAPI, HTTPException
+from ml_common.contracts import ChurnPrediction, ModelMetadata, PredictRequest, PredictResponse
 from ml_common.preprocess import select_inference_features
 
 from serving.predict import load_model
-from serving.settings import settings
+from serving.settings import get_settings
 from serving.storage import download_json
 
+settings = get_settings()
+
 _model = None
-_feature_names: list[str] = []
-_categorical_categories: dict[str, list[str]] | None = None
-_threshold: float = 0.5
+_metadata: ModelMetadata | None = None
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    global _model, _feature_names, _categorical_categories, _threshold
+    global _model, _metadata
     artifact_uri = settings.aip_storage_uri.rstrip("/")
     _model = load_model(artifact_uri, project_id=settings.project_id)
-    metadata = download_json(f"{artifact_uri}/metadata.json", project_id=settings.project_id)
-    _feature_names = metadata["feature_names"]
-    _categorical_categories = metadata.get("categorical_categories")
-    _threshold = settings.threshold
+    _metadata = ModelMetadata.model_validate(
+        download_json(f"{artifact_uri}/metadata.json", project_id=settings.project_id)
+    )
     yield
 
 
@@ -65,7 +67,7 @@ def _reject_unnamed_instances(df: pd.DataFrame) -> None:
     """
     if df.empty:
         return
-    if not set(df.columns) & set(_feature_names):
+    if not set(df.columns) & set(_metadata.feature_names):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -83,16 +85,18 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post(settings.aip_predict_route)
-async def predict(request: Request) -> JSONResponse:
+@app.post(settings.aip_predict_route, response_model=PredictResponse)
+async def predict(request: PredictRequest) -> PredictResponse:
     """Score a batch of instances and return churn probabilities with thresholded labels."""
-    body = await request.json()
-    df = pd.DataFrame(body["instances"])
+    df = pd.DataFrame(request.instances)
     _reject_unnamed_instances(df)
-    X = select_inference_features(df, _feature_names, _categorical_categories)
+    X = select_inference_features(df, _metadata.feature_names, _metadata.categorical_categories)
     proba = _model.predict_proba(X)[:, 1]
-    predictions = [
-        {CHURN_PROBABILITY_FIELD: float(p), CHURN_PREDICTION_FIELD: bool(p >= _threshold)}
-        for p in proba
-    ]
-    return JSONResponse({"predictions": predictions})
+    return PredictResponse(
+        predictions=[
+            ChurnPrediction(
+                churn_probability=float(p), churn_prediction=bool(p >= settings.threshold)
+            )
+            for p in proba
+        ]
+    )

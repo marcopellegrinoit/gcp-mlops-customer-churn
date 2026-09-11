@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import post_training.evaluate as evaluate_module
 import pytest
-from ml_common.config import CHURN_PROBABILITY_FIELD
+from ml_common.contracts import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
 from post_training.evaluate import read_batch_predictions, run_evaluate_stage
 
 
@@ -22,6 +22,14 @@ class _FakeBlob:
 _TEST_REF = json.dumps({"snapshot_date": "2026-07-19", "split": "test"})
 
 
+def _prediction(churn_probability: float, threshold: float = 0.5) -> dict:
+    """One serving-container prediction, in the shape BatchPredictionRecord declares."""
+    return {
+        CHURN_PROBABILITY_FIELD: churn_probability,
+        CHURN_PREDICTION_FIELD: churn_probability >= threshold,
+    }
+
+
 # ---------------------------------------------------------------------------
 # read_batch_predictions
 # ---------------------------------------------------------------------------
@@ -32,13 +40,13 @@ def test_read_batch_predictions_aggregates_across_shards(monkeypatch):
         _FakeBlob(
             "prediction.results-00000-of-00002",
             [
-                {"customer_id": "d1", "prediction": {CHURN_PROBABILITY_FIELD: 0.1}},
+                {"customer_id": "d1", "prediction": _prediction(0.1)},
             ],
         ),
         _FakeBlob(
             "prediction.results-00001-of-00002",
             [
-                {"customer_id": "d2", "prediction": {CHURN_PROBABILITY_FIELD: 0.9}},
+                {"customer_id": "d2", "prediction": _prediction(0.9)},
             ],
         ),
     ]
@@ -53,7 +61,7 @@ def test_read_batch_predictions_ignores_error_shards(monkeypatch):
         _FakeBlob(
             "prediction.results-00000-of-00001",
             [
-                {"customer_id": "d1", "prediction": {CHURN_PROBABILITY_FIELD: 0.1}},
+                {"customer_id": "d1", "prediction": _prediction(0.1)},
             ],
         ),
         _FakeBlob(
@@ -76,9 +84,9 @@ def test_read_batch_predictions_aligns_to_input_order_even_when_shuffled(monkeyp
         _FakeBlob(
             "prediction.results-00000-of-00001",
             [
-                {"customer_id": "d3", "prediction": {CHURN_PROBABILITY_FIELD: 0.3}},
-                {"customer_id": "d1", "prediction": {CHURN_PROBABILITY_FIELD: 0.1}},
-                {"customer_id": "d2", "prediction": {CHURN_PROBABILITY_FIELD: 0.2}},
+                {"customer_id": "d3", "prediction": _prediction(0.3)},
+                {"customer_id": "d1", "prediction": _prediction(0.1)},
+                {"customer_id": "d2", "prediction": _prediction(0.2)},
             ],
         ),
     ]
@@ -93,7 +101,7 @@ def test_read_batch_predictions_raises_on_missing_customer_id(monkeypatch):
         _FakeBlob(
             "prediction.results-00000-of-00001",
             [
-                {"customer_id": "d1", "prediction": {CHURN_PROBABILITY_FIELD: 0.1}},
+                {"customer_id": "d1", "prediction": _prediction(0.1)},
             ],
         ),
     ]
@@ -113,7 +121,11 @@ def _patch_common(monkeypatch, df):
     monkeypatch.setattr(
         evaluate_module,
         "download_json",
-        lambda uri: {"shap_importance": {"feature_a": 1.0}, "threshold": 0.5},
+        lambda uri: {
+            "feature_names": ["avg_transaction_30d"],
+            "shap_importance": {"feature_a": 1.0},
+            "threshold": 0.5,
+        },
     )
 
 
@@ -135,7 +147,7 @@ def _blobs_for(df, churn_probability=0.5):
         _FakeBlob(
             "prediction.results-00000-of-00001",
             [
-                {"customer_id": d, "prediction": {CHURN_PROBABILITY_FIELD: churn_probability}}
+                {"customer_id": d, "prediction": _prediction(churn_probability)}
                 for d in df["customer_id"]
             ],
         ),
@@ -156,8 +168,8 @@ def test_run_evaluate_stage_no_champion_skips_champion_scoring(monkeypatch):
         champion_threshold_path="/nonexistent/path/should/not/be/read.txt",
         project_id="proj",
     )
-    assert decision["promote"] is True
-    assert metrics["champion_metrics"] is None
+    assert decision.promote is True
+    assert metrics.champion_metrics is None
 
 
 def test_run_evaluate_stage_with_champion_reads_predictions_and_shap(monkeypatch, tmp_path):
@@ -179,10 +191,8 @@ def test_run_evaluate_stage_with_champion_reads_predictions_and_shap(monkeypatch
         champion_threshold_path=str(threshold_path),
         project_id="proj",
     )
-    assert metrics["champion_metrics"] is not None
-    assert (
-        metrics["shap_rank_correlation"] is None
-    )  # only one shared feature, correlation needs >=2
+    assert metrics.champion_metrics is not None
+    assert metrics.shap_rank_correlation is None  # only one shared feature, correlation needs >=2
 
 
 def test_run_evaluate_stage_raises_on_missing_challenger_prediction(monkeypatch):
@@ -192,7 +202,7 @@ def test_run_evaluate_stage_raises_on_missing_challenger_prediction(monkeypatch)
         _FakeBlob(
             "prediction.results-00000-of-00001",
             [
-                {"customer_id": d, "prediction": {CHURN_PROBABILITY_FIELD: 0.5}}
+                {"customer_id": d, "prediction": _prediction(0.5)}
                 for d in ["d1", "d2", "d3"]  # d4 missing
             ],
         ),

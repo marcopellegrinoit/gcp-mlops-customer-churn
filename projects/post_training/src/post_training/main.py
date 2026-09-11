@@ -15,6 +15,12 @@ import argparse
 import json
 import pathlib
 
+from ml_common.contracts import (
+    EvaluationMetrics,
+    PromotionDecision,
+    RegistrationResult,
+    to_json,
+)
 from obs_common.logging import configure_logging
 
 configure_logging()
@@ -77,8 +83,8 @@ def _evaluate(args: argparse.Namespace) -> None:
         champion_threshold_path=args.champion_threshold,
         project_id=args.project_id,
     )
-    _write(args.output_metrics, json.dumps(metrics))
-    _write(args.output_decision, json.dumps(decision))
+    _write(args.output_metrics, to_json(metrics))
+    _write(args.output_decision, to_json(decision))
     _write(args.output_kfp_metrics, json.dumps(flatten_for_kfp_metrics(metrics, decision)))
 
 
@@ -86,11 +92,9 @@ def _register_or_reject(args: argparse.Namespace) -> None:
     """Handle the register_or_reject subcommand."""
     from post_training.register import register_or_reject
 
-    metrics = json.loads(_read(args.metrics))
-    decision = json.loads(_read(args.decision))
     result = register_or_reject(
-        metrics=metrics,
-        decision=decision,
+        metrics=EvaluationMetrics.model_validate_json(_read(args.metrics)),
+        decision=PromotionDecision.model_validate_json(_read(args.decision)),
         challenger_uri=_read(args.challenger_uri),
         serving_image_uri=args.serving_image_uri,
         project_id=args.project_id,
@@ -99,14 +103,14 @@ def _register_or_reject(args: argparse.Namespace) -> None:
         experiment_name=args.experiment_name,
         consecutive_rejection_key=args.consecutive_rejection_key,
     )
-    _write(args.output_result, json.dumps(result))
+    _write(args.output_result, to_json(result))
 
 
 def _notify(args: argparse.Namespace) -> None:
     """Handle the notify subcommand."""
     from post_training.notify import notify
 
-    notify(message=json.loads(_read(args.message)))
+    notify(message=RegistrationResult.model_validate_json(_read(args.message)))
 
 
 # ---------------------------------------------------------------------------

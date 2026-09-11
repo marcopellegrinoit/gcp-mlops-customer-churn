@@ -52,6 +52,10 @@ A read failure degrades to treating the whole base as active. That keeps generat
 
 ### Event Schema
 
+The row is declared once as `data_generator.schema.ActivityCdcRow` and validated before it is streamed, so the generator cannot emit a row that `raw.activity_cdc` will not accept. The categorical vocabularies (`event_type`, `region`, `membership_tier`, `payment_status`, `channel`) are `StrEnum`s in that module rather than loose string lists — the model's categorical splits are frozen against exactly these values at training time, and a value outside them silently becomes NaN at inference.
+
+Numeric ranges are deliberately *not* constrained by the contract: the generator injects out-of-range values on purpose (see [Anomaly Injection](#anomaly-injection)), and bounding them here would reject the very rows the drift and data-quality machinery exists to catch. Validation covers shape and type; plausibility is the data-quality gate's job, further downstream. See [architecture.md](architecture.md#data-contracts--configuration).
+
 Every row written to BigQuery contains the following fields:
 
 | Field | Type | Description |
@@ -115,7 +119,7 @@ The dbt job is controlled by environment variables injected at Cloud Run Job run
 
 ### Model Graph & Materialization Strategy
 
-The dbt project executes a three-model graph. Staging and intermediate models use **ephemeral** materialization — they compile into CTEs inlined directly into the final query and create no BigQuery objects. The marts model uses **incremental** materialization with `insert_overwrite`: on each run dbt computes a full feature snapshot for all customers and writes it into the partition matching `CURRENT_DATE()`, overwriting that day's partition if it already exists and leaving all previous partitions untouched. This gives a complete, queryable history of feature states keyed by `snapshot_date`.
+The dbt project executes a six-model graph. Staging and intermediate models use **ephemeral** materialization — they compile into CTEs inlined directly into the final query and create no BigQuery objects. The `customer_features` mart uses **incremental** materialization with `insert_overwrite`: on each run dbt computes a full feature snapshot for all customers and writes it into the partition matching `CURRENT_DATE()`, overwriting that day's partition if it already exists and leaving all previous partitions untouched. This gives a complete, queryable history of feature states keyed by `snapshot_date`.
 
 A **mart** (short for data mart) is the final, consumer-ready layer in a dbt project. Where staging and intermediate models clean and reshape raw data, a mart assembles everything into a purpose-built table that downstream systems — in this case Vertex AI training and the serving endpoint — can query directly without any further transformation.
 
@@ -125,11 +129,19 @@ flowchart TD
     STG["models/staging/stg_activity_cdc<br/>[EPHEMERAL]<br/>Deduplication, anomaly filtering, null coalescing"]
     INT["models/intermediate/int_customer_aggregates<br/>[EPHEMERAL]<br/>30/90-day rolling aggregates,<br/>anchored to snapshot_date"]
     MART[("models/marts/customer_features<br/>[INCREMENTAL, insert_overwrite]<br/>→ features.customer_features<br/>One row per customer per snapshot_date partition")]
+    CUR[("models/marts/customer_features_current<br/>[TABLE] → features.customer_features_current<br/>Newest partition, label dropped — the batch-predict input")]
+    PRED[("ml.predictions<br/>BigQuery source — written by the workflow's<br/>batch-predict sync, never built by dbt")]
+    DASH1["models/marts/churn_risk_current<br/>[VIEW] → features.churn_risk_current<br/>Newest scored snapshot, business columns"]
+    DASH2["models/marts/churn_risk_daily<br/>[VIEW] → features.churn_risk_daily<br/>One row per scored day"]
 
     RAW --> STG
     STG --> INT
     STG --> MART
     INT --> MART
+    MART --> CUR
+    MART --> DASH1
+    PRED --> DASH1
+    PRED --> DASH2
 ```
 
 ### Layer 1 — Staging: `stg_activity_cdc`
@@ -211,6 +223,21 @@ This table is the direct input to the Vertex AI training pipeline and the servin
 ### `customer_features_current`
 
 A second marts model holding only the newest partition of `customer_features`, with the label and build-metadata timestamps removed. It exists because Vertex AI's `bigquerySource` takes a table reference with no row filter, so scoping the daily scoring run to one snapshot has to happen in the transformation layer. Built by the same `dbt build` invocation as the mart, so it can never drift out of step with it. See [ml-infrastructure.md](ml-infrastructure.md) for why the daily job must not score the full mart.
+
+### `churn_risk_current` and `churn_risk_daily`
+
+Two marts models backing the business dashboard — both **views**, and both reading `ml.predictions`, which dbt declares as a *source* and never builds or tests. See [dashboard.md](dashboard.md) for the full design.
+
+Views rather than tables, because of where dbt sits in the daily DAG. The orchestrator runs `data-gen → dbt → batch predict → sync → drift monitor`, so at the moment dbt runs, *today's predictions do not exist yet*. Materialising a model called `churn_risk_current` would freeze yesterday's scores into it and leave the dashboard permanently a day behind the pipeline. Adding a second dbt invocation after the sync step would fix that at the cost of another orchestrator branch to fail in; a view moves the join to read time and needs no orchestration at all.
+
+| Model | Grain | What it is for |
+|---|---|---|
+| `churn_risk_current` | One row per customer, newest scored snapshot | Joins `ml.predictions` to `customer_features` and renames the columns a non-technical reader works with. **Drops `churned`** — an observed outcome must not sit beside a predicted probability in a business UI. |
+| `churn_risk_daily` | One row per scored day | Aggregates `ml.predictions` alone. The `customer_features` join would add revenue-over-time and make this the one dashboard query whose cost grows with retention — and it runs on every page load. |
+
+`churn_risk_current` filters **both** sides of its join to the scored snapshot explicitly. A join predicate does not prune partitions, and `customer_features` retains 90 days, so relying on the join to narrow it would scan the lot.
+
+`churn_risk_daily` hardcodes the dashboard's high-risk floor in a `COUNTIF`, because SQL cannot import a Python constant. A test in `projects/dashboard/tests/test_risk.py` reads this file and asserts it still matches the app's default — without it the trend line and the table beneath it could describe different populations while both are labelled "high risk".
 
 ### Contract enforcement
 

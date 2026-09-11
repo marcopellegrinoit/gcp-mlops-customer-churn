@@ -5,8 +5,13 @@ import pathlib
 
 import numpy as np
 import pandas as pd
-from ml_common import config as ml_config
 from ml_common import evaluate as ml_evaluate
+from ml_common.contracts import (
+    BatchPredictionRecord,
+    EvaluationMetrics,
+    ModelMetadata,
+    PromotionDecision,
+)
 from ml_common.preprocess import prepare_features
 
 from post_training.bigquery import read_split
@@ -21,7 +26,7 @@ def run_evaluate_stage(
     champion_shap_path: str,
     champion_threshold_path: str,
     project_id: str,
-) -> tuple[dict, dict]:
+) -> tuple[EvaluationMetrics, PromotionDecision]:
     """Run the champion/challenger gate from predictions already scored by their own serving images.
 
     challenger_predictions_dir and champion_predictions_dir are both Vertex AI Batch Prediction
@@ -32,9 +37,10 @@ def run_evaluate_stage(
     separate scoring pass that could drift from it. champion_predictions_dir is "" when no champion
     exists yet (first-ever pipeline run).
 
-    Each model's decision threshold (challenger_meta["threshold"], champion_threshold_path) was
-    selected at training time from out-of-fold CV predictions, never from this test set — so the
-    F1 reported here isn't optimistically biased by having also picked the operating point on it.
+    Each model's decision threshold (the challenger's from its metadata.json,
+    the champion's from champion_threshold_path) was selected at training time from out-of-fold
+    CV predictions, never from this test set — so the F1 reported here isn't optimistically
+    biased by having also picked the operating point on it.
 
     Returns (metrics, decision): metrics carries the scored facts (no verdict), decision carries
     just the promote bool and the deltas that drove it.
@@ -42,15 +48,15 @@ def run_evaluate_stage(
     df = read_split(test_uri, project_id)
     _, y = prepare_features(df)
 
-    challenger_meta = download_json(f"{challenger_uri}/metadata.json")
+    challenger_meta = ModelMetadata.model_validate(download_json(f"{challenger_uri}/metadata.json"))
     challenger_proba = read_batch_predictions(challenger_predictions_dir, df["customer_id"])
 
     if not champion_predictions_dir:
         metrics = ml_evaluate.compute_full_metrics(
             y_true=y.to_numpy(),
             challenger_proba=challenger_proba,
-            challenger_threshold=challenger_meta["threshold"],
-            challenger_shap=challenger_meta["shap_importance"],
+            challenger_threshold=challenger_meta.threshold,
+            challenger_shap=challenger_meta.shap_importance,
         )
     else:
         champion_proba = read_batch_predictions(champion_predictions_dir, df["customer_id"])
@@ -60,19 +66,14 @@ def run_evaluate_stage(
         metrics = ml_evaluate.compute_full_metrics(
             y_true=y.to_numpy(),
             challenger_proba=challenger_proba,
-            challenger_threshold=challenger_meta["threshold"],
-            challenger_shap=challenger_meta["shap_importance"],
+            challenger_threshold=challenger_meta.threshold,
+            challenger_shap=challenger_meta.shap_importance,
             champion_proba=champion_proba,
             champion_threshold=champion_threshold,
             champion_shap=champion_shap,
         )
 
-    decision = ml_evaluate.decide(
-        metrics,
-        pr_auc_min_delta=ml_config.PR_AUC_MIN_DELTA,
-        f1_min_delta=ml_config.F1_MIN_DELTA,
-    )
-    return metrics, decision
+    return metrics, ml_evaluate.decide(metrics)
 
 
 def read_batch_predictions(gcs_output_directory: str, customer_ids: pd.Series) -> np.ndarray:
@@ -85,6 +86,11 @@ def read_batch_predictions(gcs_output_directory: str, customer_ids: pd.Series) -
     in an echoed "instance" object — customer_id is also excluded from what's actually sent to the
     model as a result. (Despite what the key_field docs say, the output field is not literally
     named "key" — confirmed against actual BatchPredictionJob output.)
+
+    Each line is validated against BatchPredictionRecord. This is the exact seam where the
+    serving container's output contract meets the gate that promotes models to production
+    traffic, so a shard whose shape has drifted must fail here rather than silently contribute
+    a missing or misread probability to a promotion decision.
     """
     proba_by_customer_id = {}
     for blob in list_blobs(gcs_output_directory):
@@ -97,10 +103,8 @@ def read_batch_predictions(gcs_output_directory: str, customer_ids: pd.Series) -
         for line in blob.download_as_text().splitlines():
             if not line.strip():
                 continue
-            record = json.loads(line)
-            proba_by_customer_id[record["customer_id"]] = record["prediction"][
-                ml_config.CHURN_PROBABILITY_FIELD
-            ]
+            record = BatchPredictionRecord.model_validate_json(line)
+            proba_by_customer_id[record.customer_id] = record.prediction.churn_probability
 
     return _proba_in_customer_id_order(proba_by_customer_id, customer_ids)
 

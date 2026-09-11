@@ -37,3 +37,13 @@ output "vertex_ai_pipeline_service_account" {
   description = "Service account email used by the Vertex AI training pipeline."
   value       = module.vertex_ai_pipeline.service_account_email
 }
+
+output "cloud_run_service_urls" {
+  description = "Provisioned Cloud Run Service URLs. With IAP enabled these are the addresses users visit — IAP intercepts them."
+  value       = { for k, v in module.cloud_run_service : k => v.service_url }
+}
+
+output "cloud_run_service_accounts" {
+  description = "Service account emails for Cloud Run Services."
+  value       = { for k, v in module.cloud_run_service : k => v.service_account_email }
+}

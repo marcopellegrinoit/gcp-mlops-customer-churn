@@ -62,6 +62,30 @@ triggers:
     branch: "^main$"
     included_files:
       - "projects/training_pipeline/**"
+    # Model policy the pipeline is compiled with. The compile step exports these as
+    # ML_*/MODELING_* environment variables, pydantic-settings reads them
+    # (projects/ml_common/src/ml_common/config.py, projects/modeling/src/modeling/config.py),
+    # and training_pipeline.settings_env pins the resolved values onto every task's
+    # container — so the values below are what the pipeline actually runs with, and a change
+    # here reaches production through a Terraform apply plus the next pipeline build, with
+    # no code change and no image rebuild.
+    #
+    # Each one restates the code default. That is deliberate: the promotion gate and the
+    # search budget are the platform's most consequential numbers, and having to read a
+    # Python module to find out what production is using is how they end up unnoticed.
+    substitutions:
+      # Promotion gate: both must improve together, so a challenger cannot be promoted by
+      # trading one metric away for the other.
+      _ML_PR_AUC_MIN_DELTA: "0.02"
+      _ML_F1_MIN_DELTA: "0.01"
+      # Recall the decision threshold is selected to hit, out-of-fold, at training time.
+      _ML_TARGET_RECALL: "0.80"
+      # Consecutive failures to promote before the run recommends a feature review.
+      _ML_MAX_CONSECUTIVE_REJECTIONS: "3"
+      # HPO budget. Trials dominate the cost and wall time of a retraining cycle; drop this
+      # to shorten a drill, raise it for a deliberate re-tune.
+      _MODELING_HPO_N_TRIALS: "100"
+      _MODELING_HPO_N_FOLDS: "5"
 
   drift-monitor-trigger:
     description: "Build and deploy the drift monitor container"
@@ -73,3 +97,17 @@ triggers:
       - "projects/drift_monitor/**"
       - "pyproject.toml"
       - "uv.lock"
+
+  dashboard-trigger:
+    description: "Build and deploy the Streamlit churn dashboard container"
+    filename: ".cloudbuild/dashboard.cloudbuild.yaml"
+    branch: "^main$"
+    included_files:
+      - "projects/obs_common/**"
+      - "projects/dashboard/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      # The dashboard's marts are the contract between dbt and this app, and one test
+      # asserts the high-risk floor duplicated in churn_risk_daily.sql still matches the
+      # app's default. A change to the marts must re-run that check.
+      - "projects/dbt_transform/models/marts/**"

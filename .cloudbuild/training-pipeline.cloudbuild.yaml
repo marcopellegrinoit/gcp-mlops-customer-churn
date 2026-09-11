@@ -53,11 +53,22 @@ steps:
           echo "${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/$name@$digest" > /workspace/$name.image
         done
 
+  # The ML_*/MODELING_* variables are the model policy this pipeline is compiled with.
+  # pydantic-settings reads them here, and training_pipeline.settings_env pins the resolved
+  # values onto every task's container, so they are recorded in the compiled pipeline spec
+  # rather than left to whatever defaults the images happen to carry. Set from Terraform:
+  # iac/config/triggers.yaml -> training-pipeline-trigger.substitutions.
   - id: compile-pipeline
     name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
     entrypoint: bash
     env:
       - UV_LINK_MODE=copy
+      - ML_PR_AUC_MIN_DELTA=${_ML_PR_AUC_MIN_DELTA}
+      - ML_F1_MIN_DELTA=${_ML_F1_MIN_DELTA}
+      - ML_TARGET_RECALL=${_ML_TARGET_RECALL}
+      - ML_MAX_CONSECUTIVE_REJECTIONS=${_ML_MAX_CONSECUTIVE_REJECTIONS}
+      - MODELING_HPO_N_TRIALS=${_MODELING_HPO_N_TRIALS}
+      - MODELING_HPO_N_FOLDS=${_MODELING_HPO_N_FOLDS}
     args:
       - -c
       - |
@@ -91,6 +102,14 @@ substitutions:
   _UV_VERSION: "0.11.19"
   _PYTHON_VERSION: "3.13"
   _PIPELINE_REPO: pipeline-templates
+  # Defaults for a manual `gcloud builds submit`. The deployed trigger overrides them from
+  # iac/config/triggers.yaml, which is the authoritative copy.
+  _ML_PR_AUC_MIN_DELTA: "0.02"
+  _ML_F1_MIN_DELTA: "0.01"
+  _ML_TARGET_RECALL: "0.80"
+  _ML_MAX_CONSECUTIVE_REJECTIONS: "3"
+  _MODELING_HPO_N_TRIALS: "100"
+  _MODELING_HPO_N_FOLDS: "5"
   # Pinned to the same rev as the ruff-pre-commit hook in .pre-commit-config.yaml, so a
   # manual `pre-commit run` and this CI gate never disagree about what's a lint failure.
   _RUFF_VERSION: "0.16.3"

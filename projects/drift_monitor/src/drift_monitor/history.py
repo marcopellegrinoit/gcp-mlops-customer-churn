@@ -12,11 +12,10 @@ import logging
 
 import pandas as pd
 from google.cloud import bigquery
-from ml_common.config import CHURN_PROBABILITY_FIELD
+from ml_common.config import get_settings
+from ml_common.contracts import CHURN_PROBABILITY_FIELD, DriftDecision, DriftMetricRow
 
 log = logging.getLogger(__name__)
-
-DRIFT_METRICS_TABLE: str = "ml.drift_metrics"
 
 
 def record_run(
@@ -24,44 +23,45 @@ def record_run(
     run_ts: pd.Timestamp,
     snapshot_date: str,
     champion_model: str,
-    result: dict,
+    decision: DriftDecision,
 ) -> None:
     """Append one row per evaluated feature for this run."""
     rows = [
-        {
-            "run_ts": run_ts.isoformat(),
-            "snapshot_date": snapshot_date,
-            "champion_model": champion_model,
-            "feature": feature,
-            "psi": psi,
-            "threshold": result["feature_thresholds"][feature],
-            "breached": feature in result["breached_features"],
-            "monitored": feature not in result["unmonitored_features"],
-        }
-        for feature, psi in result["feature_psi"].items()
+        DriftMetricRow(
+            run_ts=run_ts,
+            snapshot_date=snapshot_date,
+            champion_model=champion_model,
+            feature=feature,
+            psi=psi,
+            threshold=decision.feature_thresholds[feature],
+            breached=feature in decision.breached_features,
+            monitored=feature not in decision.unmonitored_features,
+        )
+        for feature, psi in decision.feature_psi.items()
     ]
     # The score check reports itself outside feature_psi (it is a model output, not an input
     # feature), but it belongs in the same time series — otherwise score drift is only ever
     # visible in the overwritten-daily decision file.
-    if "score_psi" in result:
+    if decision.score_psi is not None:
         rows.append(
-            {
-                "run_ts": run_ts.isoformat(),
-                "snapshot_date": snapshot_date,
-                "champion_model": champion_model,
-                "feature": CHURN_PROBABILITY_FIELD,
-                "psi": result["score_psi"],
-                "threshold": result["score_threshold"],
-                "breached": result["score_drift_detected"],
-                "monitored": True,
-            }
+            DriftMetricRow(
+                run_ts=run_ts,
+                snapshot_date=snapshot_date,
+                champion_model=champion_model,
+                feature=CHURN_PROBABILITY_FIELD,
+                psi=decision.score_psi,
+                threshold=decision.score_threshold,
+                breached=decision.score_drift_detected,
+                monitored=True,
+            )
         )
 
     if not rows:
         return
 
     bq = bigquery.Client(project=project_id)
-    errors = bq.insert_rows_json(f"{project_id}.{DRIFT_METRICS_TABLE}", rows)
+    table = f"{project_id}.{get_settings().drift_metrics_table}"
+    errors = bq.insert_rows_json(table, [row.model_dump(mode="json") for row in rows])
     if errors:
         raise RuntimeError(f"Failed to record drift metrics: {errors}")
 
@@ -80,7 +80,7 @@ def prior_breach_counts(project_id: str, champion_model: str, prior_runs: int) -
         return {}
 
     bq = bigquery.Client(project=project_id)
-    full_table = f"{project_id}.{DRIFT_METRICS_TABLE}"
+    full_table = f"{project_id}.{get_settings().drift_metrics_table}"
 
     query = f"""
         WITH recent_runs AS (

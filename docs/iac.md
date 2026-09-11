@@ -30,11 +30,24 @@ Every GCP resource lives inside a dedicated module under `iac/modules/`. The roo
 | `bq_dataset/` | Creates `google_bigquery_dataset` resources |
 | `bq_table/` | Creates `google_bigquery_table` resources |
 | `cloud_run_job/` | Creates Cloud Run Job + dedicated service account + IAM bindings |
+| `cloud_run_service/` | Creates Cloud Run Service + dedicated service account + IAM bindings + IAP |
 | `cloud_build/` | Creates Cloud Build v2 repo link, SA IAM bindings, and all triggers |
 | `cloud_workflow/` | Creates Cloud Workflows orchestrator definitions |
 | `gcs_bucket/` | Creates `google_storage_bucket` resources + optional bucket-level IAM bindings |
 | `vertex_ai_pipeline/` | Creates the dedicated SA the training pipeline runs as + its IAM bindings |
 | `secret_manager/` | Creates a `google_secret_manager_secret` + initial version |
+
+## Runtime Configuration
+
+Application behaviour is configured through environment variables read by `pydantic-settings` classes in the code (see [architecture.md](architecture.md#data-contracts--configuration)), which makes this repository the single place a knob is turned — no image rebuild, no code change.
+
+Two delivery paths, because the two runtimes differ:
+
+* **Cloud Run services** take `env_vars` from `cloud_run_services.yaml`, through the same `locals.tf` merge. The `dashboard-service` block carries the dashboard's cost guards (`MAX_BYTES_BILLED`, `CACHE_TTL_SECONDS`) and its presentation bands (`HIGH_RISK_THRESHOLD`, `MEDIUM_RISK_THRESHOLD`, `INDICATOR_RATIO`) — see [dashboard.md](dashboard.md#configuration-reference).
+* **Cloud Run jobs** take `env_vars` from `cloud_run_jobs.yaml`. `locals.tf` merges `BQ_PROJECT_ID = var.project_id` into every job's map, so no job hardcodes the project. The `drift-monitor-job` block carries the detection policy (`PSI_THRESHOLD`, `PERSISTENCE_WINDOW`, `PERSISTENCE_MIN_BREACHES`, `QUALITY_HISTORY_PARTITIONS`, `ML_MIN_ROW_RATIO`, `ML_MAX_NULL_RATE_INCREASE`); `data-gen-job` carries the simulation's scale and its anomaly-injection rate.
+* **Vertex AI Pipelines containers** have no Terraform of their own — the compiled pipeline spec is their deployment descriptor. `training-pipeline-trigger` in `triggers.yaml` therefore declares `substitutions`, which Cloud Build exports into the pipeline-compile step's environment; `training_pipeline.settings_env` reads them and pins the resolved values onto every task's container. The `_ML_*`/`_MODELING_*` substitutions there are the promotion gate and the HPO budget — the platform's most consequential numbers — and they restate the code defaults on purpose, so what production runs with is legible here rather than only in a Python module.
+
+Each value is required to be typed and in range by the settings class that reads it, so a bad value fails the container at startup rather than producing a plausible-looking but wrong run.
 
 ## BigQuery Tables (`bq_table` module)
 
@@ -52,6 +65,26 @@ The `raw.activity_cdc` table and `features.customer_features` both have a 90-day
 ## Cloud Run Jobs
 
 The `cloud_run_job` module co-locates service account creation and IAM bindings with the job resource, and uses `lifecycle { ignore_changes = [template] }` so CI/CD image updates are not reverted by Terraform. Besides `bq_dataset_roles` and `service_account_project_roles`, it also accepts a `gcs_bucket_roles` map (bucket short key → role), resolved to the project-prefixed bucket name in `main.tf` the same way `vertex_ai_pipeline` resolves its own bucket roles — added for `drift-monitor-job`, which needs to read the champion's training artifacts and write its decision JSON to GCS.
+
+## Cloud Run Services (`cloud_run_service` module)
+
+One service exists: `dashboard-service`, the business-user churn dashboard. The module mirrors `cloud_run_job` — service account, project roles and BigQuery dataset roles created alongside the resource, with `ignore_changes` on the image so CI/CD revisions are not reverted — and adds the three things a *service* needs that a Job does not.
+
+**IAP, without a load balancer.** `iap_enabled = true` on `google_cloud_run_v2_service` protects the `run.app` URL directly. This integration is GA and free; the older topology needed an external Application Load Balancer, forwarding rule and static IP, none of which have a free tier. Two IAM bindings complete it: `google_cloud_run_v2_service_iam_member` grants `roles/run.invoker` to IAP's service agent — the **only** principal that holds it, which is what makes the service unreachable except through IAP — and `google_iap_web_cloud_run_service_iam_member` grants `roles/iap.httpsResourceAccessor` to each member of the `dashboard_viewers` variable.
+
+`dashboard_viewers` is a Terraform variable rather than a field in `cloud_run_services.yaml` on purpose: the YAML files describe the *shape* of the infrastructure, while who may read customer-level data is per-environment. It defaults to `[]`, so the service deploys reachable by nobody.
+
+The service's `ingress` is `INGRESS_TRAFFIC_ALL`, which the direct IAP integration requires — IAP fronts the public `run.app` path. The authorisation boundary is the IAM binding, not the network.
+
+**Scaling that stays free.** `min_instance_count = 0`. Cloud Run's always-free allowance is 180k vCPU-seconds a month against roughly 2.6M for one instance pinned warm through a 730-hour month, so `min_instances = 1` would leave the free tier by about 15×. `startup_cpu_boost` absorbs the resulting cold start; `max_instances` caps a runaway. `cpu_idle = false` is required in the other direction — Streamlit serves each session over a long-lived WebSocket from a per-process cache, so throttling CPU between requests would stall it.
+
+**A real startup probe.** Without an explicit probe Cloud Run uses a TCP check that succeeds as soon as the port is bound — before the app can serve — so the first request of a cold start lands on a server that is not ready. The module probes Streamlit's own `/_stcore/health`.
+
+### The one beta-provider resource
+
+`google_project_service_identity` (which provisions IAP's service agent) has no GA equivalent, so `provider.tf` declares `hashicorp/google-beta` for it alone. GCP creates that agent lazily, and without it the invoker binding can reference a principal that does not exist yet and fail the first apply. Nothing else in this configuration uses the beta provider.
+
+The GA provider floor was also raised from `>= 4.0` to `>= 7.0`: `iap_enabled` and `google_iap_web_cloud_run_service_iam_member` both postdate the 4.x line, and on an older provider the IAP field is silently unknown and the service deploys unprotected.
 
 ## Cloud Build (2nd-gen API)
 

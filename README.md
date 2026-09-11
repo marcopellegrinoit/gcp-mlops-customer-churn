@@ -18,6 +18,8 @@ The primary engineering objective of this project is to model an enterprise-read
 * **CI/CD Platform:** Google Cloud Build
 * **Code Quality:** Ruff (lint & format), enforced by pre-commit hooks locally and as a blocking Cloud Build step; `pip-audit` gates every build on known dependency CVEs; integration tests (Testcontainers: BigQuery emulator, fake GCS) run in CI where a component has real emulator-backed coverage
 * **Compute Layer:** Cloud Run Jobs & Vertex AI Training
+* **Business Dashboard:** Streamlit on Cloud Run, secured by Identity-Aware Proxy (no load balancer)
+* **Schemas & Configuration:** Pydantic / pydantic-settings — every schema that crosses a container or storage boundary is a declared, validated contract, and every tunable is an environment variable set from Terraform
 * **Infrastructure as Code:** Terraform
 * **Data Generation:** Python (NumPy)
 * **Email Delivery:** SendGrid (transactional operational alerts)
@@ -60,6 +62,13 @@ flowchart TB
         DM --> GCS_META[(GCS bucket<br/>pipeline-metadata)]
     end
 
+    subgraph BIZ["Business Access"]
+        BQ_PRED --> DASH[Cloud Run Service<br/>dashboard-service<br/>Streamlit]
+        BQ_FEAT --> DASH
+        IAP[Identity-Aware Proxy] --> DASH
+        USER([Business user]) --> IAP
+    end
+
     WF -->|Task C| BP
     WF -->|Task D| DM
     GCS_META -->|drift decision JSON| WF
@@ -80,8 +89,8 @@ flowchart TB
 
     classDef gcp fill:#4285F4,color:#ffffff,stroke:#1a56c4;
     classDef ext fill:#6b7280,color:#ffffff,stroke:#374151;
-    class CB,AR_C,AR_K,SCHED,WF,DG,DBT,BP,DM,VP,VE,MR,BQ_RAW,BQ_FEAT,BQ_PRED,GCS_META,GCS_TRAIN gcp;
-    class GH,SG ext;
+    class CB,AR_C,AR_K,SCHED,WF,DG,DBT,BP,DM,VP,VE,MR,BQ_RAW,BQ_FEAT,BQ_PRED,GCS_META,GCS_TRAIN,DASH,IAP gcp;
+    class GH,SG,USER ext;
 ```
 
 Every deployable in this diagram is provisioned by Terraform — see [docs/iac.md](docs/iac.md). For the step-by-step daily and retraining flows, see [docs/orchestration.md](docs/orchestration.md).
@@ -100,6 +109,7 @@ Every deployable in this diagram is provisioned by Terraform — see [docs/iac.m
 | ML Infrastructure (MLE guide) | [docs/ml-infrastructure.md](docs/ml-infrastructure.md) |
 | Feature Exploration & Selection | [docs/feature-exploration.md](docs/feature-exploration.md) |
 | Observability & Drift Remediation | [docs/observability.md](docs/observability.md) |
+| Churn Dashboard (business users) | [docs/dashboard.md](docs/dashboard.md) |
 | Infrastructure as Code (Terraform) | [docs/iac.md](docs/iac.md) |
 | CI/CD Deployment Blueprint | [docs/cicd.md](docs/cicd.md) |
 

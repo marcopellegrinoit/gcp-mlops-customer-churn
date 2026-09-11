@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 import xgboost as xgb
 from fastapi.testclient import TestClient
-from ml_common.config import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
+from ml_common.contracts import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
 
 
 @pytest.fixture()
@@ -32,7 +32,7 @@ def client(monkeypatch):
     monkeypatch.setattr(
         app_module,
         "download_json",
-        lambda uri, project_id: {"feature_names": ["avg_transaction_30d"]},
+        lambda uri, project_id: {"feature_names": ["avg_transaction_30d"], "threshold": 0.5},
     )
 
     with TestClient(app_module.app) as c:
@@ -96,3 +96,20 @@ def test_empty_instance_list_is_not_rejected(client):
     resp = client.post("/predict", json={"instances": []})
     assert resp.status_code == 200
     assert resp.json()["predictions"] == []
+
+
+def test_malformed_body_is_a_client_error_not_a_crash(client):
+    # PredictRequest makes the shape part of the endpoint's contract: a body without
+    # "instances" used to raise KeyError and surface as a 500, which reads as a broken
+    # serving container rather than as a malformed request.
+    assert client.post("/predict", json={"rows": []}).status_code == 422
+
+
+def test_response_matches_the_declared_prediction_contract(client):
+    # These are the exact field names post_training.evaluate reads back out of the Batch
+    # Prediction output and the orchestrator MERGEs into ml.predictions.
+    resp = client.post("/predict", json={"instances": [{"avg_transaction_30d": 180.0}]})
+    assert set(resp.json()["predictions"][0]) == {
+        CHURN_PROBABILITY_FIELD,
+        CHURN_PREDICTION_FIELD,
+    }

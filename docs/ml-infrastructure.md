@@ -37,6 +37,8 @@ Runs are visible in the Vertex AI Experiments console and queryable via the MLfl
 
 Every training run computes global mean |SHAP| values for all input features and logs them to Vertex AI Experiments alongside the standard evaluation metrics. They're also written to `metadata.json` in the run's GCS artifact directory (alongside `model.ubj`, see [Experiment Tracking](#experiment-tracking)). When a challenger is promoted to champion, that same `metadata.json` — read via the registered `Model`'s `uri` — becomes the **baseline** the next cycle's `fetch_champion` stage reads back (the Vertex AI Model resource has no writable custom-metadata field for custom-trained models, so the GCS artifact directory is the source of truth rather than the registry entry itself).
 
+`metadata.json` is a declared contract — `ml_common.contracts.ModelMetadata` — validated by every one of the four containers that read it, and written with optional fields omitted rather than nulled so a champion registered before a field existed stays readable. See [architecture.md](architecture.md#data-contracts--configuration).
+
 These per-run importance scores serve two purposes:
 
 - **Interpretability** — every run in Vertex AI Experiments carries a complete record of which features drove the model at that point in time, making it possible to audit decisions after the fact.

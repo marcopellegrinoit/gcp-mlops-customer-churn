@@ -66,3 +66,60 @@ models:
           its MERGE on (customer_id, snapshot_date).
         tests:
           - not_null
+
+  - name: churn_risk_current
+    description: >
+      Business-facing read model behind the churn dashboard: the newest scored snapshot of
+      ml.predictions joined back to the customer_features columns a retention owner can act
+      on. A view rather than a table because dbt runs *before* batch prediction in the daily
+      DAG, so anything materialised here would be a day stale — see the model for the full
+      reasoning. Carries no `churned` label: the observed outcome must not sit next to a
+      predicted probability in a business UI.
+    columns:
+      - name: customer_id
+        description: "UUID identifying the synthetic customer. One row per customer for the scored snapshot."
+        tests:
+          - unique
+          - not_null
+      - name: churn_probability
+        description: "Champion model's predicted churn probability."
+        tests:
+          - not_null
+          # A probability outside [0, 1] means the serving contract changed underneath the
+          # dashboard; the risk bands and every percentage in the UI are meaningless then.
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: churn_prediction
+        description: "Binary prediction after the champion's registered decision threshold."
+        tests:
+          - not_null
+      - name: monthly_value
+        description: >
+          avg_transaction_30d, renamed. The generator emits monthly recurring amounts, so
+          this is a monthly run rate — not an annualised or lifetime value.
+      - name: snapshot_date
+        description: "The scored snapshot. Identical on every row: the view filters to MAX(snapshot_date)."
+        tests:
+          - not_null
+
+  - name: churn_risk_daily
+    description: >
+      One row per scored day for the dashboard's trend strip. Aggregates ml.predictions
+      alone and never joins customer_features — the join is what would make this the one
+      dashboard query whose cost grows with retention, and it runs on every page load.
+    columns:
+      - name: snapshot_date
+        description: "Scored day."
+        tests:
+          - unique
+          - not_null
+      - name: customers_scored
+        description: "Rows in that day's prediction partition."
+        tests:
+          - not_null
+      - name: model_versions_used
+        description: >
+          Distinct champion models in that day's partition. A trend discontinuity that
+          coincides with a change here is a model change, not a customer-behaviour change.

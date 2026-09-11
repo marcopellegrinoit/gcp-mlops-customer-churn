@@ -1,6 +1,5 @@
 """Vertex AI Experiments integration: wraps modeling stages with GCP logging and I/O."""
 
-import json
 import logging
 import tempfile
 import uuid
@@ -10,10 +9,11 @@ import modeling.train as ml_train
 import pandas as pd
 import xgboost as xgb
 from google.cloud import aiplatform, storage
-from ml_common.config import CHURN_PROBABILITY_FIELD
+from ml_common.config import get_settings as get_ml_settings
+from ml_common.contracts import CHURN_PROBABILITY_FIELD, ModelMetadata, SplitRef, to_json
 from ml_common.drift import compute_baseline_stats
 from ml_common.preprocess import categorical_categories, prepare_features
-from modeling import config as ml_config
+from modeling.config import get_settings as get_modeling_settings
 
 from trainer.data import read_split
 
@@ -57,11 +57,12 @@ def run_hpo_stage(
         aiplatform.log_metrics({"cv_pr_auc_mean": mean_pr_auc, "cv_pr_auc_std": std_pr_auc})
         aiplatform.end_run()
 
+    modeling_settings = get_modeling_settings()
     return ml_hpo.run_hpo(
         X,
         y,
-        search_space=ml_config.HPO_SEARCH_SPACE,
-        fixed_params=ml_config.XGB_FIXED_PARAMS,
+        search_space=modeling_settings.hpo_search_space,
+        fixed_params=modeling_settings.fixed_params,
         n_trials=n_trials,
         n_folds=n_folds,
         random_state=random_state,
@@ -93,14 +94,15 @@ def run_train_stage(
     # without retraining (scripts/rebuild_champion_baseline.py). Every training run writes a
     # partition, including runs whose challenger was rejected, so "the latest partition" is
     # not a reliable stand-in for "the partition this champion trained on".
-    training_snapshot_date = json.loads(train_uri)["snapshot_date"]
+    training_snapshot_date = SplitRef.model_validate_json(train_uri).snapshot_date
 
+    fixed_params = get_modeling_settings().fixed_params
     logging.info("Training final model with params=%s", params)
     model, feat_names, shap_importance = ml_train.train_model(
-        X, y, params, ml_config.XGB_FIXED_PARAMS, random_state
+        X, y, params, fixed_params, random_state
     )
     threshold = ml_train.select_threshold_via_cv(
-        X, y, params, ml_config.XGB_FIXED_PARAMS, ml_config.TARGET_RECALL, n_folds, random_state
+        X, y, params, fixed_params, get_ml_settings().target_recall, n_folds, random_state
     )
 
     artifact_id = uuid.uuid4().hex  # unique prefix so concurrent runs don't overwrite each other
@@ -122,39 +124,33 @@ def run_train_stage(
     train_scores = pd.DataFrame({CHURN_PROBABILITY_FIELD: model.predict_proba(X)[:, 1]})
     baseline_stats = compute_baseline_stats(X)
     baseline_stats.update(compute_baseline_stats(train_scores))
-    cat_categories = categorical_categories(X)
-    _upload_artifacts(
-        model,
-        feat_names,
-        shap_importance,
-        threshold,
-        baseline_stats,
-        cat_categories,
-        training_snapshot_date,
-        artifact_uri,
+
+    metadata = ModelMetadata(
+        feature_names=feat_names,
+        shap_importance=shap_importance,
+        threshold=threshold,
+        baseline_stats=baseline_stats,
+        categorical_categories=categorical_categories(X),
+        training_snapshot_date=training_snapshot_date,
     )
+    _upload_artifacts(model, metadata, artifact_uri)
     return artifact_uri
 
 
-def _upload_artifacts(
-    model: xgb.XGBClassifier,
-    feat_names: list[str],
-    shap_importance: dict[str, float],
-    threshold: float,
-    baseline_stats: dict,
-    cat_categories: dict[str, list[str]],
-    training_snapshot_date: str,
-    artifact_uri: str,
-) -> None:
+def _upload_artifacts(model: xgb.XGBClassifier, metadata: ModelMetadata, artifact_uri: str) -> None:
     """Save model.ubj and metadata.json to a GCS artifact directory.
 
-    baseline_stats freezes this training run's per-feature distribution, plus the
-    training-time churn_probability distribution, so the drift monitor can later
-    compare live feature and score traffic against them without needing access to
-    the original training data. cat_categories similarly freezes each categorical
-    column's training-time category list, so inference reuses training's exact
-    category->code mapping instead of re-deriving it from whatever a given batch
-    happens to contain (see ml_common.preprocess.select_inference_features).
+    metadata.baseline_stats freezes this training run's per-feature distribution, plus the
+    training-time churn_probability distribution, so the drift monitor can later compare
+    live feature and score traffic against them without needing access to the original
+    training data. categorical_categories similarly freezes each categorical column's
+    training-time category list, so inference reuses training's exact category->code mapping
+    instead of re-deriving it from whatever a given batch happens to contain (see
+    ml_common.preprocess.select_inference_features).
+
+    Written through ml_common.contracts.to_json rather than the model's own JSON serialiser
+    — baseline bin edges are bounded by ±inf, which pydantic would write as null. See that
+    function for the full reasoning.
     """
     bucket_name, prefix = _split_uri(artifact_uri)
     client = storage.Client()
@@ -164,16 +160,8 @@ def _upload_artifacts(
         model.save_model(tmp.name)
         bucket.blob(f"{prefix}/model.ubj").upload_from_filename(tmp.name)
 
-    metadata = {
-        "feature_names": feat_names,
-        "shap_importance": shap_importance,
-        "threshold": threshold,
-        "baseline_stats": baseline_stats,
-        "categorical_categories": cat_categories,
-        "training_snapshot_date": training_snapshot_date,
-    }
     bucket.blob(f"{prefix}/metadata.json").upload_from_string(
-        json.dumps(metadata), content_type="application/json"
+        to_json(metadata), content_type="application/json"
     )
 
 

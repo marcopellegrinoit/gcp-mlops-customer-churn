@@ -25,11 +25,18 @@ variable "sa_roles" {
 }
 
 variable "triggers" {
+  description = <<-EOT
+    Build triggers, keyed by trigger name. `substitutions` are passed to the build as
+    _-prefixed variables; the pipeline-compile build forwards them into the compile step's
+    environment, which is how the model policy a pipeline is compiled with is set from here
+    rather than from a constant in the image.
+  EOT
   type = map(object({
     description    = string
     branch         = string
     included_files = list(string)
     filename       = string
+    substitutions  = optional(map(string), {})
   }))
   default = {}
 }

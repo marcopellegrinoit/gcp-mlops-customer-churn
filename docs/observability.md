@@ -21,6 +21,8 @@ The practical consequence for the training pipeline: the `hpo` stage's per-trial
 
 The comparison calculates the Population Stability Index (PSI) per feature (`ml_common.drift.compute_psi`). The decision — per-feature PSI scores, the threshold each was judged against, which breached, and which carried no signal — is written as JSON to `gs://<project>-pipeline-metadata/drift/latest.json`, since a Cloud Run Job execution has no return-value channel back to its caller.
 
+The file's shape is `ml_common.contracts.DriftDecision`. It is assembled in stages — the PSI comparison, then the score check, the persistence rule, and the data-quality gate, each of which may override `drift_detected` — and every stage's write is validated as it happens, so a typo'd field cannot silently leave the orchestrator reading the previous value. Sections that did not run are omitted rather than written as `null`, because the workflow reads them through `map.get` defaults and a present-but-null key would take the wrong branch. The drift job's own thresholds (`PSI_THRESHOLD`, the persistence window, the data-quality tolerances) are environment variables set in `iac/config/cloud_run_jobs.yaml` — see [architecture.md](architecture.md#data-contracts--configuration).
+
 If no champion is registered yet (first-ever run), the check short-circuits to `drift_detected = false` — there's nothing to compare against.
 
 Wasserstein Distance is not currently computed; PSI alone drives the threshold decision.
@@ -138,7 +140,7 @@ The back-off is keyed on `consecutive_rejections` rather than a flat interval, b
 
 A flat floor conflated two opposite situations. A retrain that was *promoted* means the loop is working, so the next genuine drift deserves an immediate response; a retrain that was *rejected* means more of the same data will very likely be rejected again. The flat version also let a real population shift arriving two days after a successful promotion go unaddressed for the rest of the window — a worse failure than the spend it was avoiding. Reading the counter is best-effort: an absent or unreadable state file degrades to 0, i.e. "no evidence of repeated failure", which favours retraining rather than suppressing it.
 
-A blocked night is **not** silent: `alert_retrain_suppressed` sends the drift email with the suppression reason, so a suppressed night is distinguishable from a quiet one. Escalation to a human remains `post_training`'s `MAX_CONSECUTIVE_REJECTIONS` feature-review alert.
+A blocked night is **not** silent: `alert_retrain_suppressed` sends the drift email with the suppression reason, so a suppressed night is distinguishable from a quiet one. Escalation to a human remains the `max_consecutive_rejections` feature-review alert (`ML_MAX_CONSECUTIVE_REJECTIONS`).
 
 ### Rebuilding a Stale Baseline
 

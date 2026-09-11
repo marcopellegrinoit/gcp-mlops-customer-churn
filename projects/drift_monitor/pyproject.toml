@@ -9,6 +9,8 @@ dependencies = [
     # MLE package — stdlib-only Cloud Logging setup, shared by every container entrypoint.
     "obs-common",
     "pandas>=3,<4",
+    "pydantic>=2,<3",
+    "pydantic-settings>=2.14.2,<3",
     # Required by google-cloud-bigquery's to_dataframe() for BQ DATE/TIME dtypes.
     "db-dtypes>=1.7.1,<2",
     # Infrastructure — GCP client libs track only major versions

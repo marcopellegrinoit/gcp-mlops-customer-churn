@@ -12,7 +12,8 @@ dependencies = [
     # Vertex AI custom-container batch-prediction contract
     "fastapi>=0.141.1,<1",
     "uvicorn>=0.30.0,<1",
-    "pydantic-settings>=2,<3",
+    "pydantic>=2,<3",
+    "pydantic-settings>=2.14.2,<3",
     # Infrastructure — GCP client libs track only major versions
     "google-cloud-storage>=3.0.0,<4",
 ]

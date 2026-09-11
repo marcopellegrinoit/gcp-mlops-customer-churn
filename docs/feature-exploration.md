@@ -59,7 +59,7 @@ Two conditions tell the team it's time to revisit the feature set rather than re
 
 ### 1 — Consecutive Challenger Rejections
 
-Every time a challenger model fails the champion/challenger gate, `register_or_reject` increments a rejection counter persisted as a small JSON state file in GCS (see [ml-infrastructure.md](ml-infrastructure.md#consecutive-rejection-counter)). When the counter reaches **3 consecutive rejections** (`MAX_CONSECUTIVE_REJECTIONS`), it sets `feature_review_alert: true` on the outcome payload and `notify` escalates its log line from a plain "challenger REJECTED" to "feature review recommended", reporting:
+Every time a challenger model fails the champion/challenger gate, `register_or_reject` increments a rejection counter persisted as a small JSON state file in GCS (see [ml-infrastructure.md](ml-infrastructure.md#consecutive-rejection-counter)). When the counter reaches **3 consecutive rejections** (`max_consecutive_rejections`, set per deployment via `ML_MAX_CONSECUTIVE_REJECTIONS`), it sets `feature_review_alert: true` on the outcome payload and `notify` escalates its log line from a plain "challenger REJECTED" to "feature review recommended", reporting:
 
 - The number of consecutive failures
 - The challenger and champion PR-AUC/F1 metrics from this run

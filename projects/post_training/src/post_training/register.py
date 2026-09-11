@@ -1,19 +1,25 @@
 """Model registration and rejection stage."""
 
-import json
 import time
 import uuid
 
 from google.cloud import aiplatform
 from google.cloud import exceptions as gcs_exceptions
+from ml_common.config import get_settings
+from ml_common.contracts import (
+    EvaluationMetrics,
+    PromotionDecision,
+    RegistrationResult,
+    RejectionState,
+    to_json,
+)
 
-from post_training.config import MAX_CONSECUTIVE_REJECTIONS
 from post_training.storage import download_json, upload_text
 
 
 def register_or_reject(
-    metrics: dict,
-    decision: dict,
+    metrics: EvaluationMetrics,
+    decision: PromotionDecision,
     challenger_uri: str,
     serving_image_uri: str,
     project_id: str,
@@ -21,23 +27,22 @@ def register_or_reject(
     model_display_name: str,
     experiment_name: str,
     consecutive_rejection_key: str,
-) -> dict:
+) -> RegistrationResult:
     """Register the challenger only if it was promoted; log every outcome to Vertex AI Experiments.
 
     Rejected challengers are never registered in Model Registry — there's no shadow
     testing or compliance requirement that needs them there, so registering them would
     only clutter the registry with versions that will never serve traffic. They're
-    logged to Vertex AI Experiments instead, purely for lineage/audit. Returns a result
-    dict with: promoted (bool), consecutive_rejections (int), feature_review_alert
-    (bool), model_version (str | None), and the evaluation metrics.
+    logged to Vertex AI Experiments instead, purely for lineage/audit.
     """
+    settings = get_settings()
     aiplatform.init(
         project=project_id,
         location=region,
         experiment=experiment_name,
         staging_bucket=f"gs://{project_id}-pipeline-metadata",
     )
-    promoted = decision["promote"]
+    promoted = decision.promote
     state_uri = f"gs://{project_id}-pipeline-metadata/post-training-state/{experiment_name}/{consecutive_rejection_key}.json"
     current_count = _get_rejection_count(state_uri)
     new_count = 0 if promoted else current_count + 1
@@ -72,7 +77,7 @@ def register_or_reject(
             # attached via short-lived credential exchange, which doesn't reliably expose
             # project info to google-cloud-storage's ADC-based project detection.
             serving_container_environment_variables={
-                "THRESHOLD": str(metrics["threshold"]),
+                "THRESHOLD": str(metrics.threshold),
                 "PROJECT_ID": project_id,
             },
             labels={"role": "champion"},
@@ -89,25 +94,25 @@ def register_or_reject(
         metrics=metrics,
         model_version=model_version,
     )
-    upload_text(state_uri, json.dumps({"consecutive_rejections": new_count}))
+    upload_text(state_uri, to_json(RejectionState(consecutive_rejections=new_count)))
 
-    return {
-        "promoted": promoted,
-        "consecutive_rejections": new_count,
-        "feature_review_alert": new_count >= MAX_CONSECUTIVE_REJECTIONS,
-        "model_version": model_version,
-        "challenger_metrics": metrics.get("challenger_metrics"),
-        "champion_metrics": metrics.get("champion_metrics"),
-        "threshold": metrics.get("threshold"),
-        "shap_rank_correlation": metrics.get("shap_rank_correlation"),
-    }
+    return RegistrationResult(
+        promoted=promoted,
+        consecutive_rejections=new_count,
+        feature_review_alert=new_count >= settings.max_consecutive_rejections,
+        model_version=model_version,
+        challenger_metrics=metrics.challenger_metrics,
+        champion_metrics=metrics.champion_metrics,
+        threshold=metrics.threshold,
+        shap_rank_correlation=metrics.shap_rank_correlation,
+    )
 
 
 def _log_run(
     promoted: bool,
     new_count: int,
     consecutive_rejection_key: str,
-    metrics: dict,
+    metrics: EvaluationMetrics,
     model_version: str | None,
 ) -> None:
     """Record this run's promotion outcome as a Vertex AI Experiments run, for lineage/audit."""
@@ -120,22 +125,14 @@ def _log_run(
             "model_version": model_version or "",
         }
     )
-    aiplatform.log_metrics({"threshold": metrics["threshold"]})
+    aiplatform.log_metrics({"threshold": metrics.threshold})
     aiplatform.end_run()
 
 
 def _get_rejection_count(state_uri: str) -> int:
-    """Read the consecutive rejection counter from its GCS state file.
-
-    Deliberately not derived from Vertex Experiments run history: `ExperimentRun.list()`
-    resolves every run in the experiment, including the ~100 HPO trial runs the trainer
-    logs per retraining cycle, and each resolution triggers its own Tensorboard
-    time-series lookup. That fan-out grows every cycle and eventually exceeds the
-    aiplatform regional CRUD-request quota (429 TooManyRequests). A dedicated state
-    file keeps this read O(1) regardless of how large the experiment's run history gets.
-    """
+    """Read the consecutive rejection counter from its GCS state file; 0 if never written."""
     try:
-        return int(download_json(state_uri).get("consecutive_rejections", 0))
+        return RejectionState.model_validate(download_json(state_uri)).consecutive_rejections
     except gcs_exceptions.NotFound:
         return 0
 

@@ -4,6 +4,7 @@ locals {
   artifact_registry          = yamldecode(file("${path.module}/config/artifact_registry.yaml"))
   gcs_buckets                = yamldecode(file("${path.module}/config/gcs_buckets.yaml"))
   cloud_run_jobs             = yamldecode(file("${path.module}/config/cloud_run_jobs.yaml"))
+  cloud_run_services         = yamldecode(file("${path.module}/config/cloud_run_services.yaml"))
   workflows                  = yamldecode(file("${path.module}/config/workflows.yaml"))
   bigquery                   = yamldecode(file("${path.module}/config/bigquery.yaml"))
   triggers                   = yamldecode(file("${path.module}/config/triggers.yaml"))
@@ -28,6 +29,14 @@ locals {
     job_name => merge(job, {
       image    = try(job.image_override, null)
       env_vars = merge(try(job.env_vars, {}), { BQ_PROJECT_ID = var.project_id })
+    })
+  }
+
+  all_cloud_run_services = {
+    for service_name, service in try(local.cloud_run_services.cloud_run_services, {}) :
+    service_name => merge(service, {
+      image    = try(service.image_override, null)
+      env_vars = merge(try(service.env_vars, {}), { BQ_PROJECT_ID = var.project_id })
     })
   }
 

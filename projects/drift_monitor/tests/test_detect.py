@@ -3,10 +3,25 @@
 import drift_monitor.detect as detect_module
 import numpy as np
 import pandas as pd
+from drift_monitor.config import DriftMonitorSettings
 from drift_monitor.detect import run_drift_check
 from ml_common.drift import compute_baseline_stats
 
 _DISPLAY_NAME = "daily-churn-scoring"
+
+
+def _settings(**overrides) -> DriftMonitorSettings:
+    """The deployed job's settings, constructed directly so no environment is needed."""
+    return DriftMonitorSettings(
+        project_id="proj",
+        region="europe-west1",
+        bq_features_table="features.customer_features",
+        model_display_name="churn-predictor",
+        gcs_bucket="pipeline-metadata",
+        decision_blob="drift/latest.json",
+        batch_predict_display_name=_DISPLAY_NAME,
+        **overrides,
+    )
 
 
 class _FakeChampion:
@@ -39,7 +54,9 @@ def _run(
     """
     monkeypatch.setattr(detect_module.aiplatform, "init", lambda **kwargs: None)
     monkeypatch.setattr(detect_module, "fetch_champion", lambda model_display_name: _FakeChampion())
-    monkeypatch.setattr(detect_module, "download_json", lambda uri: metadata)
+    # threshold is required of every real artifact; defaulted here so each test's metadata
+    # literal only has to carry the fields that test is actually about.
+    monkeypatch.setattr(detect_module, "download_json", lambda uri: {"threshold": 0.5, **metadata})
     monkeypatch.setattr(
         detect_module,
         "fetch_latest_snapshot",
@@ -58,22 +75,10 @@ def _run(
     )
     uploaded = {}
     monkeypatch.setattr(
-        detect_module, "upload_json", lambda uri, obj: uploaded.update(uri=uri, obj=obj)
+        detect_module, "upload_decision", lambda uri, obj: uploaded.update(uri=uri, obj=obj)
     )
 
-    result = run_drift_check(
-        project_id="proj",
-        region="europe-west1",
-        bq_features_table="features.customer_features",
-        model_display_name="churn-predictor",
-        decision_gcs_uri="gs://bucket/drift/latest.json",
-        psi_threshold=0.2,
-        batch_predict_display_name=_DISPLAY_NAME,
-        persistence_window=3,
-        persistence_min_breaches=2,
-        quality_history_partitions=7,
-    )
-    return result, uploaded
+    return run_drift_check(_settings()), uploaded
 
 
 def test_run_drift_check_returns_no_champion_reason_when_none_registered(monkeypatch):
@@ -82,24 +87,14 @@ def test_run_drift_check_returns_no_champion_reason_when_none_registered(monkeyp
 
     uploaded = {}
     monkeypatch.setattr(
-        detect_module, "upload_json", lambda uri, obj: uploaded.update(uri=uri, obj=obj)
+        detect_module, "upload_decision", lambda uri, obj: uploaded.update(uri=uri, obj=obj)
     )
 
-    result = run_drift_check(
-        project_id="proj",
-        region="europe-west1",
-        bq_features_table="features.customer_features",
-        model_display_name="churn-predictor",
-        decision_gcs_uri="gs://bucket/drift/latest.json",
-        psi_threshold=0.2,
-        batch_predict_display_name=_DISPLAY_NAME,
-        persistence_window=3,
-        persistence_min_breaches=2,
-        quality_history_partitions=7,
-    )
+    result = run_drift_check(_settings())
 
-    assert result == {"drift_detected": False, "reason": "no_champion_registered"}
-    assert uploaded["uri"] == "gs://bucket/drift/latest.json"
+    assert result.drift_detected is False
+    assert result.reason == "no_champion_registered"
+    assert uploaded["uri"] == "gs://proj-pipeline-metadata/drift/latest.json"
     assert uploaded["obj"] == result
 
 
@@ -114,9 +109,9 @@ def test_run_drift_check_reports_no_drift_when_distribution_stable(monkeypatch):
         monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: None
     )
 
-    assert result["drift_detected"] is False
-    assert result["champion_model"] == "projects/p/locations/l/models/123"
-    assert result["snapshot_date"] == "2026-06-18"
+    assert result.drift_detected is False
+    assert result.champion_model == "projects/p/locations/l/models/123"
+    assert result.snapshot_date == "2026-06-18"
     assert uploaded["obj"] == result
 
 
@@ -138,9 +133,9 @@ def test_run_drift_check_reports_drift_when_distribution_shifts(monkeypatch):
         prior_breaches={"avg_transaction_30d": 1},
     )
 
-    assert result["drift_detected"] is True
-    assert "avg_transaction_30d" in result["breached_features"]
-    assert "avg_transaction_30d" in result["persistent_breaches"]
+    assert result.drift_detected is True
+    assert "avg_transaction_30d" in result.breached_features
+    assert "avg_transaction_30d" in result.persistent_breaches
 
 
 def test_run_drift_check_adds_score_psi_without_affecting_drift_detected(monkeypatch):
@@ -161,9 +156,9 @@ def test_run_drift_check_adds_score_psi_without_affecting_drift_detected(monkeyp
         monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: stable_scores
     )
 
-    assert result["drift_detected"] is False
-    assert "score_psi" in result
-    assert result["score_drift_detected"] is False
+    assert result.drift_detected is False
+    assert result.score_psi is not None
+    assert result.score_drift_detected is False
 
 
 def test_run_drift_check_flags_score_drift_when_scores_shift(monkeypatch):
@@ -184,8 +179,8 @@ def test_run_drift_check_flags_score_drift_when_scores_shift(monkeypatch):
     )
 
     # Score drift never flips the feature-only drift_detected flag that gates retraining.
-    assert result["drift_detected"] is False
-    assert result["score_drift_detected"] is True
+    assert result.drift_detected is False
+    assert result.score_drift_detected is True
 
 
 def test_run_drift_check_skips_score_check_when_predictions_unavailable(monkeypatch):
@@ -201,8 +196,8 @@ def test_run_drift_check_skips_score_check_when_predictions_unavailable(monkeypa
 
     result, _ = _run(monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: None)
 
-    assert "score_psi" not in result
-    assert "score_drift_detected" not in result
+    assert result.score_psi is None
+    assert result.score_drift_detected is None
 
 
 def test_run_drift_check_skips_score_check_on_empty_predictions(monkeypatch):
@@ -219,7 +214,7 @@ def test_run_drift_check_skips_score_check_on_empty_predictions(monkeypatch):
 
     result, _ = _run(monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: empty)
 
-    assert "score_psi" not in result
+    assert result.score_psi is None
 
 
 def test_run_drift_check_survives_score_fetch_exception(monkeypatch):
@@ -238,8 +233,8 @@ def test_run_drift_check_survives_score_fetch_exception(monkeypatch):
 
     result, uploaded = _run(monkeypatch, metadata, baseline_df, fetch_predictions=_boom)
 
-    assert result["drift_detected"] is False
-    assert "score_psi" not in result
+    assert result.drift_detected is False
+    assert result.score_psi is None
     assert uploaded["obj"] == result
 
 
@@ -262,8 +257,8 @@ def test_run_drift_check_survives_compute_psi_failure_after_successful_fetch(mon
         monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: unusable_scores
     )
 
-    assert result["drift_detected"] is False
-    assert "score_psi" not in result
+    assert result.drift_detected is False
+    assert result.score_psi is None
     assert uploaded["obj"] == result
 
 
@@ -285,8 +280,8 @@ def test_run_drift_check_skips_score_check_when_scores_are_all_null(monkeypatch)
         monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: all_null_scores
     )
 
-    assert "score_psi" not in result
-    assert "score_drift_detected" not in result
+    assert result.score_psi is None
+    assert result.score_drift_detected is None
 
 
 def test_run_drift_check_skips_score_check_for_pre_change_artifacts(monkeypatch):
@@ -303,7 +298,7 @@ def test_run_drift_check_skips_score_check_for_pre_change_artifacts(monkeypatch)
 
     result, _ = _run(monkeypatch, metadata, baseline_df, fetch_predictions=_should_not_be_called)
 
-    assert "score_psi" not in result
+    assert result.score_psi is None
 
 
 def test_first_breach_does_not_trigger_retraining(monkeypatch):
@@ -325,10 +320,10 @@ def test_first_breach_does_not_trigger_retraining(monkeypatch):
         prior_breaches={},
     )
 
-    assert result["run_drift_detected"] is True
-    assert result["drift_detected"] is False
-    assert result["breach_counts"] == {"avg_transaction_30d": 1}
-    assert result["persistent_breaches"] == {}
+    assert result.run_drift_detected is True
+    assert result.drift_detected is False
+    assert result.breach_counts == {"avg_transaction_30d": 1}
+    assert result.persistent_breaches == {}
 
 
 def test_unreadable_history_fails_safe_to_no_retraining(monkeypatch):
@@ -353,8 +348,8 @@ def test_unreadable_history_fails_safe_to_no_retraining(monkeypatch):
         prior_breach_counts=_boom,
     )
 
-    assert result["run_drift_detected"] is True
-    assert result["drift_detected"] is False
+    assert result.run_drift_detected is True
+    assert result.drift_detected is False
 
 
 def test_history_write_failure_does_not_discard_the_decision(monkeypatch):
@@ -372,7 +367,7 @@ def test_history_write_failure_does_not_discard_the_decision(monkeypatch):
         monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: None
     )
 
-    assert result["drift_detected"] is False
+    assert result.drift_detected is False
     assert uploaded["obj"] == result
 
 
@@ -395,11 +390,11 @@ def test_data_quality_failure_suppresses_retraining(monkeypatch):
         prior_breaches={"avg_transaction_30d": 5},
     )
 
-    assert result["run_drift_detected"] is True
-    assert result["drift_detected"] is False
-    assert result["retrain_suppressed_by_data_quality"] is True
-    assert result["data_quality"]["data_quality_failed"] is True
-    assert "collapsed_column" in {f["check"] for f in result["data_quality"]["failures"]}
+    assert result.run_drift_detected is True
+    assert result.drift_detected is False
+    assert result.retrain_suppressed_by_data_quality is True
+    assert result.data_quality.data_quality_failed is True
+    assert "collapsed_column" in {f.check for f in result.data_quality.failures}
 
 
 def test_healthy_snapshot_leaves_the_drift_verdict_alone(monkeypatch):
@@ -419,9 +414,9 @@ def test_healthy_snapshot_leaves_the_drift_verdict_alone(monkeypatch):
         prior_breaches={"avg_transaction_30d": 1},
     )
 
-    assert result["data_quality"]["data_quality_failed"] is False
-    assert result["drift_detected"] is True
-    assert "retrain_suppressed_by_data_quality" not in result
+    assert result.data_quality.data_quality_failed is False
+    assert result.drift_detected is True
+    assert result.retrain_suppressed_by_data_quality is None
 
 
 def test_data_quality_check_failure_fails_closed(monkeypatch):
@@ -446,5 +441,5 @@ def test_data_quality_check_failure_fails_closed(monkeypatch):
         quality_context=_boom,
     )
 
-    assert result["drift_detected"] is False
-    assert result["data_quality"]["data_quality_failed"] is True
+    assert result.drift_detected is False
+    assert result.data_quality.data_quality_failed is True

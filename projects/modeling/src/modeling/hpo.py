@@ -9,6 +9,8 @@ import xgboost as xgb
 from sklearn.metrics import average_precision_score
 from sklearn.model_selection import StratifiedKFold
 
+from modeling.config import SearchSpaceParam
+
 # suppress per-trial INFO noise; results are captured via trial_callback
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -16,7 +18,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 def run_hpo(
     X: pd.DataFrame,
     y: pd.Series,
-    search_space: dict,
+    search_space: dict[str, SearchSpaceParam],
     fixed_params: dict,
     n_trials: int,
     n_folds: int,
@@ -33,13 +35,11 @@ def run_hpo(
     def objective(trial: optuna.Trial) -> float:
         params = {}
         for name, spec in search_space.items():
-            if spec["type"] == "int":
-                params[name] = trial.suggest_int(name, spec["low"], spec["high"])
+            if spec.type == "int":
+                params[name] = trial.suggest_int(name, spec.low, spec.high)
             else:
                 # log=True applies log-scale sampling (e.g. learning_rate spans orders of magnitude)
-                params[name] = trial.suggest_float(
-                    name, spec["low"], spec["high"], log=spec.get("log", False)
-                )
+                params[name] = trial.suggest_float(name, spec.low, spec.high, log=spec.log)
         params.update(fixed_params)
         params["random_state"] = random_state
 

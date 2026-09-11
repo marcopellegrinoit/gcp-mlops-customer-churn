@@ -2,12 +2,13 @@
 
 import numpy as np
 import pandas as pd
+from modeling.config import FloatParam, IntParam
 from modeling.hpo import run_hpo
 
 FIXED_PARAMS = {"tree_method": "hist"}
 SEARCH_SPACE = {
-    "max_depth": {"type": "int", "low": 2, "high": 4},
-    "learning_rate": {"type": "float", "low": 0.05, "high": 0.3, "log": True},
+    "max_depth": IntParam(low=2, high=4),
+    "learning_rate": FloatParam(low=0.05, high=0.3, log=True),
 }
 
 
@@ -21,15 +22,12 @@ def _make_dataset(n=100, seed=0):
 def test_run_hpo_returns_params_within_search_space():
     X, y = _make_dataset()
     best_params = run_hpo(X, y, SEARCH_SPACE, FIXED_PARAMS, n_trials=3, n_folds=2)
+    depth = SEARCH_SPACE["max_depth"]
+    assert depth.low <= best_params["max_depth"] <= depth.high
     assert (
-        SEARCH_SPACE["max_depth"]["low"]
-        <= best_params["max_depth"]
-        <= SEARCH_SPACE["max_depth"]["high"]
-    )
-    assert (
-        SEARCH_SPACE["learning_rate"]["low"]
+        SEARCH_SPACE["learning_rate"].low
         <= best_params["learning_rate"]
-        <= SEARCH_SPACE["learning_rate"]["high"]
+        <= SEARCH_SPACE["learning_rate"].high
     )
 
 

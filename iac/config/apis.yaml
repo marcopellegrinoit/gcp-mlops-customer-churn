@@ -10,3 +10,4 @@ apis:
   - cloudscheduler.googleapis.com
   - aiplatform.googleapis.com
   - datalineage.googleapis.com
+  - iap.googleapis.com

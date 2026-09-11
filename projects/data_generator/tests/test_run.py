@@ -3,13 +3,14 @@
 from unittest.mock import MagicMock
 
 import pytest
-from data_generator.main import Config, _create_customer_pool, _days_since_epoch, run
+from data_generator.config import Settings
+from data_generator.main import _create_customer_pool, _days_since_epoch, run
 
 
 @pytest.fixture
 def config():
     """Minimal config for fast unit tests."""
-    return Config(
+    return Settings(
         project_id="test-project",
         dataset_id="test-dataset",
         table_id="test-table",
@@ -79,7 +80,7 @@ class TestBigQueryInteraction:
 class TestBatchSize:
     @pytest.mark.parametrize("batch_size", [1, 5, 10, 50])
     def test_inserts_exactly_batch_size_rows(self, mock_client, batch_size):
-        cfg = Config(
+        cfg = Settings(
             project_id="p",
             dataset_id="d",
             table_id="t",
@@ -98,7 +99,7 @@ class TestBatchSize:
 
 class TestAnomalyRate:
     def test_anomaly_rate_zero_produces_no_anomalies(self, mock_client):
-        cfg = Config(
+        cfg = Settings(
             project_id="p",
             dataset_id="d",
             table_id="t",
@@ -111,7 +112,7 @@ class TestAnomalyRate:
         assert not any(r["anomaly_injected"] for r in rows)
 
     def test_anomaly_rate_one_produces_all_anomalies(self, mock_client):
-        cfg = Config(
+        cfg = Settings(
             project_id="p",
             dataset_id="d",
             table_id="t",
@@ -124,7 +125,7 @@ class TestAnomalyRate:
         assert all(r["anomaly_injected"] for r in rows)
 
     def test_partial_anomaly_rate_produces_mixed_events(self, mock_client):
-        cfg = Config(
+        cfg = Settings(
             project_id="p",
             dataset_id="d",
             table_id="t",
@@ -185,7 +186,7 @@ class TestAbsorbingChurn:
     def test_a_customer_who_churns_gets_no_later_event_in_the_same_batch(self, mock_client):
         # Within one run the cancellation must also be that customer's last event, or the
         # label read off their most recent event would contradict it.
-        cfg = Config(
+        cfg = Settings(
             project_id="p",
             dataset_id="d",
             table_id="t",

@@ -15,7 +15,9 @@ import argparse
 import json
 import pathlib
 
-from modeling import config as ml_config
+from ml_common.config import get_settings as get_ml_settings
+from ml_common.contracts import to_json
+from modeling.config import get_settings as get_modeling_settings
 from obs_common.logging import configure_logging
 
 configure_logging()
@@ -36,13 +38,13 @@ def _data_split(args: argparse.Namespace) -> None:
     """Handle the data_split subcommand."""
     from trainer.data import export_snapshot  # deferred so unused stages don't load heavy deps
 
-    train_uri, test_uri = export_snapshot(
+    train_ref, test_ref = export_snapshot(
         project_id=args.project_id,
         bq_features_table=args.bq_features_table,
         snapshot_date=args.snapshot_date or None,
     )
-    _write(args.output_train_uri, train_uri)
-    _write(args.output_test_uri, test_uri)
+    _write(args.output_train_uri, to_json(train_ref))
+    _write(args.output_test_uri, to_json(test_ref))
 
 
 def _hpo(args: argparse.Namespace) -> None:
@@ -56,7 +58,7 @@ def _hpo(args: argparse.Namespace) -> None:
         region=args.region,
         n_trials=args.n_trials,
         n_folds=args.n_folds,
-        random_state=ml_config.RANDOM_STATE,
+        random_state=get_ml_settings().random_state,
     )
     _write(args.output_params, json.dumps(best_params))
 
@@ -75,7 +77,7 @@ def _train(args: argparse.Namespace) -> None:
         region=args.region,
         run_name=args.run_name,
         n_folds=args.n_folds,
-        random_state=ml_config.RANDOM_STATE,
+        random_state=get_ml_settings().random_state,
     )
     _write(args.output_model_uri, model_uri)
 
@@ -103,8 +105,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--region", required=True)
     p.add_argument("--train-uri", required=True)
     p.add_argument("--experiment-name", required=True)
-    p.add_argument("--n-trials", type=int, default=ml_config.HPO_N_TRIALS)
-    p.add_argument("--n-folds", type=int, default=ml_config.HPO_N_FOLDS)
+    p.add_argument("--n-trials", type=int, default=get_modeling_settings().hpo_n_trials)
+    p.add_argument("--n-folds", type=int, default=get_modeling_settings().hpo_n_folds)
     p.add_argument("--output-params", required=True)
     p.set_defaults(func=_hpo)
 
@@ -116,7 +118,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--artifact-gcs-prefix", required=True)
     p.add_argument("--experiment-name", required=True)
     p.add_argument("--run-name", default="challenger")
-    p.add_argument("--n-folds", type=int, default=ml_config.HPO_N_FOLDS)
+    p.add_argument("--n-folds", type=int, default=get_modeling_settings().hpo_n_folds)
     p.add_argument("--output-model-uri", required=True)
     p.set_defaults(func=_train)
 

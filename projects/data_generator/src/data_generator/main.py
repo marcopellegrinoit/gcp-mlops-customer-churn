@@ -27,47 +27,46 @@ behave like a real membership base:
 """
 
 import dataclasses
-import json
 import logging
-import os
 import random
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
 
 import numpy as np
 from google.cloud import bigquery
 from obs_common.logging import configure_logging
 
+from data_generator.config import Settings, get_settings
+from data_generator.schema import (
+    ActivityCdcRow,
+    ActivityEvent,
+    Channel,
+    EventType,
+    MembershipTier,
+    PaymentStatus,
+    Region,
+)
+
 configure_logging()
 log = logging.getLogger(__name__)
 
-_TIERS = ["supporter", "friend", "champion", "guardian"]
-_TIER_BASE_TRANSACTION: dict[str, float] = {
-    "supporter": 10.0,
-    "friend": 25.0,
-    "champion": 50.0,
-    "guardian": 100.0,
+_TIERS = list(MembershipTier)
+_TIER_BASE_TRANSACTION: dict[MembershipTier, float] = {
+    MembershipTier.SUPPORTER: 10.0,
+    MembershipTier.FRIEND: 25.0,
+    MembershipTier.CHAMPION: 50.0,
+    MembershipTier.GUARDIAN: 100.0,
 }
-_REGIONS = ["us-east", "us-west", "eu-west", "eu-central", "apac", "latam"]
-_EVENT_TYPES = [
-    "transaction",
-    "membership_renewal",
-    "campaign_action",
-    "email_engagement",
-    "event_attended",
-    "contact_request",
-    "membership_cancelled",
-]
-# Events an active customer can emit. 'membership_cancelled' is excluded because it is now
+_REGIONS = list(Region)
+# Events an active customer can emit. MEMBERSHIP_CANCELLED is excluded because it is
 # reserved for an actual churn: it is emitted only when the churn hazard fires, so it marks
 # the end of a customer's history rather than appearing at random mid-life.
-_ACTIVE_EVENT_TYPES = [e for e in _EVENT_TYPES if e != "membership_cancelled"]
-_PAYMENT_STATUSES = ["success", "failed", "pending"]
-_CHANNELS = ["email", "web", "mobile", "direct_mail", "in_person", "phone"]
+_ACTIVE_EVENT_TYPES = [e for e in EventType if e != EventType.MEMBERSHIP_CANCELLED]
+_PAYMENT_STATUSES = list(PaymentStatus)
+_CHANNELS = list(Channel)
 
 # Customers on these channels never generate digital engagement signals (MAR).
-_OFFLINE_CHANNELS = frozenset({"direct_mail", "phone"})
+_OFFLINE_CHANNELS = frozenset({Channel.DIRECT_MAIL, Channel.PHONE})
 
 _ANOMALY_TRANSACTIONS = [-999.0, 0.0, 9999.99]
 _ANOMALY_ENGAGEMENT_SCORES = [-1.0, 5.0, 99.9]
@@ -96,49 +95,16 @@ _ZERO_DAYS = timedelta(0)
 
 
 @dataclasses.dataclass(frozen=True)
-class Config:
-    """Runtime configuration loaded from environment variables."""
-
-    project_id: str
-    dataset_id: str
-    table_id: str
-    batch_size: int = 2000
-    anomaly_rate: float = 0.0
-    customer_pool_size: int = 10000  # founding base, acquired on the pool epoch
-    # New customers acquired per elapsed day. Without acquisition the base only ever shrinks
-    # as customers churn, and its tenure distribution climbs without bound.
-    daily_acquisitions: int = 25
-
-    @classmethod
-    def from_env(cls) -> "Config":
-        """Build Config from environment variables; raises KeyError for missing required vars."""
-        return cls(
-            project_id=os.environ["BQ_PROJECT_ID"],
-            dataset_id=os.environ["BQ_DATASET_ID"],
-            table_id=os.environ["BQ_TABLE_ID"],
-            batch_size=int(os.getenv("BATCH_SIZE", "2000")),
-            anomaly_rate=float(os.getenv("ANOMALY_RATE", "0.0")),
-            customer_pool_size=int(os.getenv("USER_POOL_SIZE", "10000")),
-            daily_acquisitions=int(os.getenv("DAILY_ACQUISITIONS", "25")),
-        )
-
-    @property
-    def table_ref(self) -> str:
-        """Return the fully-qualified BigQuery table reference."""
-        return f"{self.project_id}.{self.dataset_id}.{self.table_id}"
-
-
-@dataclasses.dataclass(frozen=True)
 class CustomerProfile:
     """Stable per-customer traits that persist across all their events, in every run."""
 
     customer_id: str
-    preferred_channel: str
+    preferred_channel: Channel
     is_offline_only: bool  # True → engagement_score always None  (MAR)
     always_fails_payments: bool  # True → payment_status never 'success' (MNAR)
     tenure_days_at_join: int | None  # None for ~3% of customers               (MCAR)
-    membership_tier: str
-    region: str
+    membership_tier: MembershipTier
+    region: Region
     joined_on_day: int  # days after _POOL_EPOCH that this customer was acquired
 
 
@@ -155,15 +121,15 @@ def _create_customer_profile(index: int, joined_on_day: int) -> CustomerProfile:
     happened to carry, both columns were noise.
     """
     rng = np.random.default_rng(index)
-    channel = str(rng.choice(_CHANNELS))
+    channel = Channel(str(rng.choice(_CHANNELS)))
     return CustomerProfile(
         customer_id=str(uuid.uuid5(_CUSTOMER_NAMESPACE, f"customer-{index}")),
         preferred_channel=channel,
         is_offline_only=channel in _OFFLINE_CHANNELS,
         always_fails_payments=bool(rng.random() < 0.08),
         tenure_days_at_join=None if rng.random() < 0.03 else int(rng.integers(1, 3651)),
-        membership_tier=str(rng.choice(_TIERS)),
-        region=str(rng.choice(_REGIONS)),
+        membership_tier=MembershipTier(str(rng.choice(_TIERS))),
+        region=Region(str(rng.choice(_REGIONS))),
         joined_on_day=joined_on_day,
     )
 
@@ -200,10 +166,10 @@ def _generate_event(
     anomaly: bool = False,
     profile: CustomerProfile | None = None,
     days_elapsed: int | None = None,
-) -> dict[str, Any]:
+) -> ActivityCdcRow:
     """Build one synthetic customer event, optionally with injected out-of-range values.
 
-    Returns an event whose ``churned`` flag, when true, is this customer's cancellation —
+    Returns a row whose ``churned`` flag, when true, is this customer's cancellation —
     run() removes them from the pool afterwards so it is also their last event.
     """
     profile = profile or random.choice(list(customer_pool.values()))
@@ -228,7 +194,9 @@ def _generate_event(
         )
         payment_attempts = int(max(0, rng.poisson(1.5)))
         payment_statuses = (
-            ["failed", "pending"] if profile.always_fails_payments else _PAYMENT_STATUSES
+            [PaymentStatus.FAILED, PaymentStatus.PENDING]
+            if profile.always_fails_payments
+            else _PAYMENT_STATUSES
         )
         payment_status = random.choice(payment_statuses)
 
@@ -248,26 +216,28 @@ def _generate_event(
         )
     churned = random.random() < (_CHURN_PROB_HIGH if high_churn else _CHURN_PROB_LOW)
 
-    core: dict[str, Any] = {
-        "event_id": str(uuid.uuid4()),
-        "event_timestamp": datetime.now(tz=UTC).isoformat(),
-        "customer_id": profile.customer_id,
+    event = ActivityEvent(
+        event_id=str(uuid.uuid4()),
+        event_timestamp=datetime.now(tz=UTC),
+        customer_id=profile.customer_id,
         # A cancellation is the event that ends the relationship, so the two have to agree:
         # customer_features derives renewal_count and the label from these, and a customer
         # whose final event is churned=true but typed 'transaction' is incoherent.
-        "event_type": "membership_cancelled" if churned else random.choice(_ACTIVE_EVENT_TYPES),
-        "region": profile.region,
-        "membership_tier": tier,
-        "monthly_transaction": monthly_transaction,
-        "payment_status": payment_status,
-        "payment_attempts_last_30d": payment_attempts,
-        "engagement_score": engagement_score,
-        "member_since_days": _member_since_days(profile, days_elapsed),
-        "contact_requests_last_30d": int(max(0, rng.poisson(0.3))),
-        "churned": churned,
-        "channel": profile.preferred_channel,
-    }
-    return {**core, "raw_payload": json.dumps(core), "anomaly_injected": anomaly}
+        event_type=(
+            EventType.MEMBERSHIP_CANCELLED if churned else random.choice(_ACTIVE_EVENT_TYPES)
+        ),
+        region=profile.region,
+        membership_tier=tier,
+        monthly_transaction=monthly_transaction,
+        payment_status=payment_status,
+        payment_attempts_last_30d=payment_attempts,
+        engagement_score=engagement_score,
+        member_since_days=_member_since_days(profile, days_elapsed),
+        contact_requests_last_30d=int(max(0, rng.poisson(0.3))),
+        churned=churned,
+        channel=profile.preferred_channel,
+    )
+    return event.to_cdc_row(anomaly_injected=anomaly)
 
 
 def _member_since_days(profile: CustomerProfile, days_elapsed: int) -> int | None:
@@ -283,7 +253,7 @@ def _member_since_days(profile: CustomerProfile, days_elapsed: int) -> int | Non
     return profile.tenure_days_at_join + max(days_elapsed - profile.joined_on_day, 0)
 
 
-def run(config: Config, client: bigquery.Client) -> None:
+def run(config: Settings, client: bigquery.Client) -> None:
     """Generate a batch of events for the active customer base and stream them to BigQuery."""
     rng = np.random.default_rng()
     days_elapsed = _days_since_epoch()
@@ -299,12 +269,12 @@ def run(config: Config, client: bigquery.Client) -> None:
 
     events = _generate_batch(active, rng, config, days_elapsed)
 
-    errors = client.insert_rows_json(config.table_ref, events)
+    errors = client.insert_rows_json(config.table_ref, [e.to_bigquery_row() for e in events])
     if errors:
         raise RuntimeError(f"BigQuery streaming insert errors: {errors}")
 
-    anomaly_count = sum(1 for e in events if e["anomaly_injected"])
-    churn_count = sum(1 for e in events if e["churned"])
+    anomaly_count = sum(1 for e in events if e.anomaly_injected)
+    churn_count = sum(1 for e in events if e.churned)
     log.info(
         "Inserted %d events into %s for %d active customers "
         "(%d churned this run, %d already churned, %d with anomaly injected)",
@@ -320,9 +290,9 @@ def run(config: Config, client: bigquery.Client) -> None:
 def _generate_batch(
     active: dict[str, CustomerProfile],
     rng: np.random.Generator,
-    config: Config,
+    config: Settings,
     days_elapsed: int,
-) -> list[dict[str, Any]]:
+) -> list[ActivityCdcRow]:
     """Generate one run's events, retiring each customer at the moment they churn.
 
     Selecting the customer here rather than inside _generate_event is what makes churn
@@ -331,7 +301,7 @@ def _generate_batch(
     can contradict it.
     """
     selectable = dict(active)
-    events: list[dict[str, Any]] = []
+    events: list[ActivityCdcRow] = []
 
     for _ in range(config.batch_size):
         if not selectable:
@@ -345,7 +315,7 @@ def _generate_batch(
             days_elapsed=days_elapsed,
         )
         events.append(event)
-        if event["churned"]:
+        if event.churned:
             del selectable[profile.customer_id]
 
     return events
@@ -372,7 +342,7 @@ def _fetch_churned_customers(client: bigquery.Client, table_ref: str) -> set[str
 
 def main() -> None:
     """Entry point: load config from env, build BigQuery client, and run one generation batch."""
-    config = Config.from_env()
+    config = get_settings()
     client = bigquery.Client(project=config.project_id)
     run(config, client)
 

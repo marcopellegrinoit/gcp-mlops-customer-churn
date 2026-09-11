@@ -1,6 +1,7 @@
 """Look up the current champion model so it can be scored via Vertex AI Batch Prediction."""
 
 from google.cloud import aiplatform
+from ml_common.contracts import ModelMetadata
 
 from post_training.storage import download_json
 
@@ -15,7 +16,11 @@ def run_fetch_champion_stage(
     "projects/{project}/locations/{location}/models/{model_name}", so handing it a full
     resource name produces a doubly-prefixed name and a 400 INVALID_ARGUMENT.
 
-    champion_model_id is "" and the other two are None if no champion exists yet.
+    champion_model_id is "" and the other two are None if no champion exists yet. When a
+    champion does exist its metadata.json is validated as a ModelMetadata, so a malformed
+    artifact fails here rather than two stages later — champion_threshold used to come back
+    None for an artifact missing it, and evaluate then crashed converting "" to a float.
+
     champion_threshold is the decision threshold the champion was evaluated/promoted
     with (set by register_or_reject from its own out-of-fold CV selection at training
     time) — never recomputed here, so it stays consistent with what's baked into the
@@ -27,8 +32,8 @@ def run_fetch_champion_stage(
     champion = _fetch_champion(model_display_name)
     if champion is None:
         return "", None, None
-    champion_meta = download_json(f"{champion.uri}/metadata.json")
-    return champion.name, champion_meta.get("shap_importance"), champion_meta.get("threshold")
+    champion_meta = ModelMetadata.model_validate(download_json(f"{champion.uri}/metadata.json"))
+    return champion.name, champion_meta.shap_importance, champion_meta.threshold
 
 
 def _fetch_champion(model_display_name: str):

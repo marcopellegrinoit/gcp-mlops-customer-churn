@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from ml_common.config import CHURN_PROBABILITY_FIELD
+from ml_common.contracts import CHURN_PROBABILITY_FIELD
 from ml_common.drift import compute_baseline_stats, compute_psi
 
 
@@ -30,7 +30,7 @@ def test_score_baseline_is_added_alongside_feature_baseline():
 
     assert "avg_transaction_30d" in baseline_stats
     assert CHURN_PROBABILITY_FIELD in baseline_stats
-    assert baseline_stats[CHURN_PROBABILITY_FIELD]["type"] == "numeric"
+    assert baseline_stats[CHURN_PROBABILITY_FIELD].type == "numeric"
 
 
 def test_score_baseline_round_trips_through_compute_psi():

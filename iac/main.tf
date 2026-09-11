@@ -52,6 +52,52 @@ module "cloud_run_job" {
   depends_on = [google_project_service.apis, module.bq_dataset, module.cloud_build, module.gcs_bucket]
 }
 
+module "cloud_run_service" {
+  source   = "./modules/cloud_run_service"
+  for_each = local.all_cloud_run_services
+
+  project_id                    = var.project_id
+  project_number                = data.google_project.this.number
+  region                        = var.region
+  service_name                  = each.key
+  description                   = try(each.value.description, "")
+  image                         = each.value.image
+  cpu                           = try(each.value.cpu, "1")
+  memory                        = try(each.value.memory, "1Gi")
+  min_instances                 = try(each.value.min_instances, 0)
+  max_instances                 = try(each.value.max_instances, 3)
+  env_vars                      = try(each.value.env_vars, {})
+  bq_dataset_roles              = try(each.value.bq_dataset_roles, {})
+  service_account_project_roles = try(each.value.service_account_project_roles, [])
+  iap_enabled                   = try(each.value.iap_enabled, true)
+  # Deliberately a variable rather than a field in cloud_run_services.yaml: who may read
+  # customer-level data is per-environment, and the YAML files are the shape of the
+  # infrastructure, not its access list.
+  iap_members         = var.dashboard_viewers
+  oauth_client_id     = var.dashboard_oauth_client_id
+  oauth_client_secret = var.dashboard_oauth_client_secret
+  deployer_sa_email   = module.cloud_build.sa_email
+
+  depends_on = [
+    google_project_service.apis,
+    google_project_service_identity.iap,
+    module.bq_dataset,
+    module.cloud_build,
+  ]
+}
+
+# IAP's service agent does not exist until something asks for it, and the invoker binding
+# in the module references it by address. Without this the first apply fails on a principal
+# that has not been created yet.
+resource "google_project_service_identity" "iap" {
+  provider = google-beta
+
+  project = var.project_id
+  service = "iap.googleapis.com"
+
+  depends_on = [google_project_service.apis]
+}
+
 module "bq_dataset" {
   source   = "./modules/bq_dataset"
   for_each = local.all_datasets

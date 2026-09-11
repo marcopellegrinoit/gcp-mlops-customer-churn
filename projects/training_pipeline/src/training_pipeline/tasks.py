@@ -11,9 +11,10 @@ import types
 from google_cloud_pipeline_components.types.artifact_types import UnmanagedContainerModel
 from kfp import dsl
 from kfp.dsl import Artifact, Input, Metrics, Output
-from modeling import config as ml_config
+from modeling.config import get_settings as get_modeling_settings
 
 _PYTHON_BASE_IMAGE = f"python:{sys.version_info.major}.{sys.version_info.minor}-slim"
+_MODELING = get_modeling_settings()
 
 
 def build_tasks(trainer_image: str, post_training_image: str) -> types.SimpleNamespace:
@@ -63,8 +64,8 @@ def build_tasks(trainer_image: str, post_training_image: str) -> types.SimpleNam
         experiment_name: str,
         train_uri: Input[Artifact],
         params: Output[Artifact],
-        n_trials: int = ml_config.HPO_N_TRIALS,
-        n_folds: int = ml_config.HPO_N_FOLDS,
+        n_trials: int = _MODELING.hpo_n_trials,
+        n_folds: int = _MODELING.hpo_n_folds,
     ):
         """Run Bayesian HPO search and write the best hyperparameter dict to params."""
         return dsl.ContainerSpec(
@@ -98,7 +99,7 @@ def build_tasks(trainer_image: str, post_training_image: str) -> types.SimpleNam
         artifact_gcs_prefix: str,
         model_uri: Output[Artifact],
         run_name: str = "challenger",
-        n_folds: int = ml_config.HPO_N_FOLDS,
+        n_folds: int = _MODELING.hpo_n_folds,
     ):
         """Train on the full dataset with the best HPO params and upload the artifact to GCS.
 

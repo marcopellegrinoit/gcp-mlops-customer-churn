@@ -2,7 +2,9 @@
 
 import numpy as np
 import pytest
-from ml_common.evaluate import _spearman_rank_correlation, select_threshold
+from ml_common.config import MLSettings
+from ml_common.contracts import EvaluationMetrics, ModelMetrics
+from ml_common.evaluate import _spearman_rank_correlation, decide, select_threshold
 
 # ---------------------------------------------------------------------------
 # select_threshold
@@ -105,3 +107,43 @@ def test_spearman_result_in_valid_range():
     corr = _spearman_rank_correlation(a, b)
     assert corr is not None
     assert -1.0 <= corr <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# promotion gate
+# ---------------------------------------------------------------------------
+
+
+def _metrics(challenger_pr_auc: float, challenger_f1: float) -> EvaluationMetrics:
+    return EvaluationMetrics(
+        challenger_metrics=ModelMetrics(
+            pr_auc=challenger_pr_auc, roc_auc=0.9, f1=challenger_f1, threshold=0.4
+        ),
+        champion_metrics=ModelMetrics(pr_auc=0.70, roc_auc=0.88, f1=0.60, threshold=0.4),
+        threshold=0.4,
+    )
+
+
+def test_first_ever_run_promotes_unconditionally():
+    metrics = EvaluationMetrics(
+        challenger_metrics=ModelMetrics(pr_auc=0.1, roc_auc=0.2, f1=0.1, threshold=0.4),
+        threshold=0.4,
+    )
+    decision = decide(metrics)
+    assert decision.promote is True
+    assert decision.pr_auc_delta is None
+
+
+def test_both_metrics_must_clear_their_floor():
+    # Single-metric gaming: a large PR-AUC gain bought with an F1 regression must not promote.
+    assert decide(_metrics(0.80, 0.55)).promote is False
+    assert decide(_metrics(0.71, 0.62)).promote is False  # F1 clears, PR-AUC does not
+    assert decide(_metrics(0.73, 0.62)).promote is True
+
+
+def test_the_gate_is_deployment_policy():
+    # ML_PR_AUC_MIN_DELTA / ML_F1_MIN_DELTA on the pipeline's containers: a deployment must
+    # be able to tighten the gate without a code change or an image rebuild.
+    metrics = _metrics(0.73, 0.62)
+    assert decide(metrics).promote is True
+    assert decide(metrics, MLSettings(pr_auc_min_delta=0.10)).promote is False

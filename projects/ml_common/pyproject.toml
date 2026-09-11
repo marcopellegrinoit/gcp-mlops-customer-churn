@@ -9,6 +9,12 @@ dependencies = [
     "numpy==2.5.2",
     "pandas==3.0.3",
     "pyarrow==24.0.0",
+    # ml_common.contracts (the cross-container data schemas) and ml_common.config (the
+    # env-driven settings) — installed into every image, since every image reads or writes
+    # at least one of those contracts. Pinned for the same reason as the ML libraries: a
+    # validation or serialisation change would alter what lands in a model artifact.
+    "pydantic==2.13.4",
+    "pydantic-settings==2.15.0",
 ]
 
 [project.optional-dependencies]

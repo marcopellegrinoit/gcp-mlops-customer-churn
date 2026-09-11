@@ -29,6 +29,7 @@ Always follow README.md and the files in `docs/` when building. Each doc file ow
 | `docs/ml-infrastructure.md` | Pipeline stages, containers, experiment tracking, serving validation |
 | `docs/feature-exploration.md` | Feature discovery, selection notebooks & trigger signals |
 | `docs/observability.md` | Drift detection & automated remediation |
+| `docs/dashboard.md` | Business-user churn dashboard (Streamlit, Cloud Run, IAP) |
 | `docs/iac.md` | Terraform modules & IaC design |
 | `docs/cicd.md` | Cloud Build pipeline steps |
 

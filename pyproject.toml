@@ -9,6 +9,7 @@ members = [
     "projects/post_training",
     "projects/training_pipeline",
     "projects/drift_monitor",
+    "projects/dashboard",
 ]
 
 [tool.uv]

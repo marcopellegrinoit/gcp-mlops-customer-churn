@@ -4,26 +4,28 @@ import json
 
 import pandas as pd
 from google.cloud import bigquery, storage
-from ml_common.config import SPLIT_ASSIGNMENTS_TABLE, TEST_SIZE
+from ml_common.config import get_settings
+from ml_common.contracts import SplitRef
 
 
 def export_snapshot(
     project_id: str,
     bq_features_table: str,
     snapshot_date: str | None = None,
-) -> tuple[str, str]:
+) -> tuple[SplitRef, SplitRef]:
     """Freeze a stratified train/test split of the feature snapshot into ml.split_assignments.
 
     The split is computed once in BigQuery (PERCENT_RANK partitioned by churned, ordered by a
     deterministic hash of customer_id) and persisted as a permanent partition of
     ml.split_assignments — see docs/ml-infrastructure.md for why this replaced an in-memory
     pandas/sklearn split. If snapshot_date is None, the most recent available partition of
-    bq_features_table is used. Returns (train_ref, test_ref), small JSON strings consumed by
+    bq_features_table is used. Returns (train_ref, test_ref), the pointers read back by
     read_split().
     """
+    settings = get_settings()
     bq = bigquery.Client(project=project_id)
     full_features_table = f"{project_id}.{bq_features_table}"
-    full_split_table = f"{project_id}.{SPLIT_ASSIGNMENTS_TABLE}"
+    full_split_table = f"{project_id}.{settings.split_assignments_table}"
 
     if snapshot_date is None:
         row = next(
@@ -56,7 +58,7 @@ def export_snapshot(
         job_config=bigquery.QueryJobConfig(
             query_parameters=[
                 snapshot_date_param,
-                bigquery.ScalarQueryParameter("train_fraction", "FLOAT64", 1 - TEST_SIZE),
+                bigquery.ScalarQueryParameter("train_fraction", "FLOAT64", 1 - settings.test_size),
             ],
             destination=f"{full_split_table}${snapshot_date.replace('-', '')}",
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
@@ -64,16 +66,16 @@ def export_snapshot(
     ).result()
 
     return (
-        json.dumps({"snapshot_date": snapshot_date, "split": "train"}),
-        json.dumps({"snapshot_date": snapshot_date, "split": "test"}),
+        SplitRef(snapshot_date=snapshot_date, split="train"),
+        SplitRef(snapshot_date=snapshot_date, split="test"),
     )
 
 
 def read_split(ref: str, project_id: str) -> pd.DataFrame:
     """Load a frozen train/test split from ml.split_assignments given an export_snapshot() ref."""
-    parsed = json.loads(ref)
+    parsed = SplitRef.model_validate_json(ref)
     bq = bigquery.Client(project=project_id)
-    full_split_table = f"{project_id}.{SPLIT_ASSIGNMENTS_TABLE}"
+    full_split_table = f"{project_id}.{get_settings().split_assignments_table}"
 
     return (
         bq.query(
@@ -84,8 +86,8 @@ def read_split(ref: str, project_id: str) -> pd.DataFrame:
             """,
             job_config=bigquery.QueryJobConfig(
                 query_parameters=[
-                    bigquery.ScalarQueryParameter("snapshot_date", "DATE", parsed["snapshot_date"]),
-                    bigquery.ScalarQueryParameter("split", "STRING", parsed["split"]),
+                    bigquery.ScalarQueryParameter("snapshot_date", "DATE", parsed.snapshot_date),
+                    bigquery.ScalarQueryParameter("split", "STRING", parsed.split),
                 ]
             ),
         )

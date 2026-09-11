@@ -1,10 +1,10 @@
 """Materialize the test split into scratch BigQuery, then export it as GCS JSONL."""
 
-import json
 import uuid
 
 from google.cloud import bigquery
-from ml_common.config import SPLIT_ASSIGNMENTS_TABLE
+from ml_common.config import get_settings
+from ml_common.contracts import SplitRef
 
 
 def create_batch_source_files(test_uri: str, project_id: str, gcs_uri_prefix: str) -> str:
@@ -22,9 +22,9 @@ def create_batch_source_files(test_uri: str, project_id: str, gcs_uri_prefix: st
     then extracts it to GCS. The random table suffix avoids name collisions between concurrent
     pipeline runs.
     """
-    parsed = json.loads(test_uri)
+    parsed = SplitRef.model_validate_json(test_uri)
     bq = bigquery.Client(project=project_id)
-    full_split_table = f"{project_id}.{SPLIT_ASSIGNMENTS_TABLE}"
+    full_split_table = f"{project_id}.{get_settings().split_assignments_table}"
     table_ref = f"{project_id}.scratch.test_batch_{uuid.uuid4().hex}"
 
     bq.query(
@@ -36,8 +36,8 @@ def create_batch_source_files(test_uri: str, project_id: str, gcs_uri_prefix: st
         """,
         job_config=bigquery.QueryJobConfig(
             query_parameters=[
-                bigquery.ScalarQueryParameter("snapshot_date", "DATE", parsed["snapshot_date"]),
-                bigquery.ScalarQueryParameter("split", "STRING", parsed["split"]),
+                bigquery.ScalarQueryParameter("snapshot_date", "DATE", parsed.snapshot_date),
+                bigquery.ScalarQueryParameter("split", "STRING", parsed.split),
             ]
         ),
     ).result()

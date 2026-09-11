@@ -9,28 +9,27 @@ step stays in the DAG so the outcome event has a single, obvious home if a
 consumer is ever added.
 """
 
-import json
 import logging
 
-from post_training.config import MAX_CONSECUTIVE_REJECTIONS
+from ml_common.config import get_settings
+from ml_common.contracts import RegistrationResult, to_json
 
 
-def notify(message: dict) -> None:
+def notify(message: RegistrationResult) -> None:
     """Log the training pipeline outcome (promotion or rejection) as the run's final event."""
     logging.info("Training pipeline outcome: %s", _summarize(message))
-    logging.info("Outcome event payload: %s", json.dumps(message, default=str))
+    logging.info("Outcome event payload: %s", to_json(message))
 
 
-def _summarize(message: dict) -> str:
+def _summarize(message: RegistrationResult) -> str:
     """Render the register_or_reject result as a one-line human-readable outcome."""
-    if message.get("promoted"):
-        return f"challenger PROMOTED to champion as {message.get('model_version')}"
+    if message.promoted:
+        return f"challenger PROMOTED to champion as {message.model_version}"
 
-    rejections = message.get("consecutive_rejections")
-    summary = f"challenger REJECTED ({rejections} consecutive rejection(s))"
-    if message.get("feature_review_alert"):
+    summary = f"challenger REJECTED ({message.consecutive_rejections} consecutive rejection(s))"
+    if message.feature_review_alert:
         summary += (
-            f" — feature review recommended: {MAX_CONSECUTIVE_REJECTIONS} or more consecutive"
-            " rejections suggest the feature set, not the training data, is the limit"
+            f" — feature review recommended: {get_settings().max_consecutive_rejections} or more"
+            " consecutive rejections suggest the feature set, not the training data, is the limit"
         )
     return summary

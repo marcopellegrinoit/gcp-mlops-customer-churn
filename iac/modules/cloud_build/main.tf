@@ -50,4 +50,5 @@ resource "google_cloudbuild_trigger" "this" {
 
   included_files = each.value.included_files
   filename       = each.value.filename
+  substitutions  = each.value.substitutions
 }

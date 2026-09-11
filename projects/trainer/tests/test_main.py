@@ -64,8 +64,8 @@ def test_data_split_requires_table(tmp_path):
     assert args.snapshot_date == ""
 
 
-def test_hpo_defaults_from_ml_config():
-    from modeling import config as ml_config
+def test_hpo_defaults_from_modeling_settings():
+    from modeling.config import get_settings
 
     parser = _build_parser()
     args = parser.parse_args(
@@ -83,8 +83,8 @@ def test_hpo_defaults_from_ml_config():
             "/tmp/params.json",
         ]
     )
-    assert args.n_trials == ml_config.HPO_N_TRIALS
-    assert args.n_folds == ml_config.HPO_N_FOLDS
+    assert args.n_trials == get_settings().hpo_n_trials
+    assert args.n_folds == get_settings().hpo_n_folds
 
 
 def test_train_run_name_default():

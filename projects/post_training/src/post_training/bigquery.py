@@ -1,17 +1,16 @@
 """BigQuery read helpers for the champion/challenger evaluation stage."""
 
-import json
-
 import pandas as pd
 from google.cloud import bigquery
-from ml_common.config import SPLIT_ASSIGNMENTS_TABLE
+from ml_common.config import get_settings
+from ml_common.contracts import SplitRef
 
 
 def read_split(ref: str, project_id: str) -> pd.DataFrame:
     """Load a frozen train/test split from ml.split_assignments given an export_snapshot() ref."""
-    parsed = json.loads(ref)
+    parsed = SplitRef.model_validate_json(ref)
     bq = bigquery.Client(project=project_id)
-    full_split_table = f"{project_id}.{SPLIT_ASSIGNMENTS_TABLE}"
+    full_split_table = f"{project_id}.{get_settings().split_assignments_table}"
 
     return (
         bq.query(
@@ -22,8 +21,8 @@ def read_split(ref: str, project_id: str) -> pd.DataFrame:
             """,
             job_config=bigquery.QueryJobConfig(
                 query_parameters=[
-                    bigquery.ScalarQueryParameter("snapshot_date", "DATE", parsed["snapshot_date"]),
-                    bigquery.ScalarQueryParameter("split", "STRING", parsed["split"]),
+                    bigquery.ScalarQueryParameter("snapshot_date", "DATE", parsed.snapshot_date),
+                    bigquery.ScalarQueryParameter("split", "STRING", parsed.split),
                 ]
             ),
         )
