@@ -246,6 +246,11 @@ module "billing_budget" {
   source = "./modules/billing_budget"
   count  = local.billing_account_id != "" ? 1 : 0
 
+  # The aliased provider, for the quota project the Budgets API demands. See provider.tf.
+  providers = {
+    google = google.billing
+  }
+
   project_id          = var.project_id
   project_number      = data.google_project.this.number
   billing_account_id  = local.billing_account_id

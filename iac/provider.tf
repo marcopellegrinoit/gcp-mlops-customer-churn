@@ -31,3 +31,26 @@ provider "google-beta" {
   project = var.project_id
   region  = var.region
 }
+
+# Used by exactly one module: billing_budget. Same discipline as the beta provider above —
+# scoped to what needs it rather than applied globally.
+#
+# The Budgets API is the only API in this configuration that requires a *quota project* on
+# the caller's credentials. User Application Default Credentials (`gcloud auth
+# application-default login`) carry none, so without this the request is quota-attributed to
+# Google's own shared Cloud SDK project (764086051850) and fails with a SERVICE_DISABLED 403
+# naming a project id nobody here recognises. user_project_override makes the provider send
+# X-Goog-User-Project, pointing the quota at this project instead.
+#
+# Deliberately not set on the default provider: every other resource applies cleanly as-is,
+# and changing the request path for all of them to fix one API would trade a known-good
+# configuration for an untested one. The cost of the header is that the caller needs
+# serviceusage.services.use on the billing project, which a project owner has.
+provider "google" {
+  alias   = "billing"
+  project = var.project_id
+  region  = var.region
+
+  user_project_override = true
+  billing_project       = var.project_id
+}
