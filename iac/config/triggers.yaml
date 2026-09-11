@@ -29,6 +29,7 @@ triggers:
     branch: "^main$"
     included_files:
       - "projects/obs_common/**"
+      - "projects/data_contracts/**"
       - "projects/ml_common/**"
       - "projects/modeling/**"
       - "projects/trainer/**"
@@ -40,6 +41,7 @@ triggers:
     filename: ".cloudbuild/serving.cloudbuild.yaml"
     branch: "^main$"
     included_files:
+      - "projects/data_contracts/**"
       - "projects/ml_common/**"
       - "projects/serving/**"
       - "pyproject.toml"
@@ -51,6 +53,7 @@ triggers:
     branch: "^main$"
     included_files:
       - "projects/obs_common/**"
+      - "projects/data_contracts/**"
       - "projects/ml_common/**"
       - "projects/post_training/**"
       - "pyproject.toml"
@@ -93,6 +96,7 @@ triggers:
     branch: "^main$"
     included_files:
       - "projects/obs_common/**"
+      - "projects/data_contracts/**"
       - "projects/ml_common/**"
       - "projects/drift_monitor/**"
       - "pyproject.toml"
@@ -104,6 +108,7 @@ triggers:
     branch: "^main$"
     included_files:
       - "projects/obs_common/**"
+      - "projects/data_contracts/**"
       - "projects/dashboard/**"
       - "pyproject.toml"
       - "uv.lock"

@@ -6,6 +6,8 @@ dependencies = [
     # DS package — resolved as a workspace path dependency by uv. No optuna/shap:
     # this image only ever loads a trained model and scores it, never trains one.
     "ml-common",
+    # Shared data schemas — imported directly, so declared directly.
+    "data-contracts",
     "xgboost>=3,<4",
     "scikit-learn>=1,<2",
     "pandas>=3,<4",
@@ -27,6 +29,7 @@ dev = [
 ]
 
 [tool.uv.sources]
+data-contracts = { workspace = true }
 ml-common = { workspace = true }
 
 [build-system]

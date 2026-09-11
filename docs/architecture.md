@@ -104,11 +104,16 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 │   │   ├── src/obs_common/     # logging — Cloud Logging severity-correct log setup
 │   │   └── tests/              # Unit tests runnable without GCP credentials
 │   │
+│   ├── data_contracts/          # Shared data schemas (pydantic only — no pandas, no GCP)
+│   │   ├── pyproject.toml      # Dependencies: pydantic. Installed into every image that
+│   │   │                       # reads or writes one of these payloads, dashboard included
+│   │   ├── src/data_contracts/ # baseline, metadata, drift, evaluation, predictions, splits
+│   │   └── tests/              # Round-trip, legacy-tolerance and field-name tests
+│   │
 │   ├── ml_common/               # DS-owned inference logic (no GCP deps, no optuna/shap)
-│   │   ├── pyproject.toml      # Dependencies: xgboost, sklearn, pandas, pyarrow, pydantic
+│   │   ├── pyproject.toml      # Dependencies: data-contracts, xgboost, sklearn, pandas
 │   │   └── src/ml_common/
 │   │       ├── config.py       # MLSettings — model policy, overridable via ML_* env vars
-│   │       ├── contracts/      # Pydantic models for every cross-container data schema
 │   │       ├── preprocess.py   # Feature selection/dtypes, shared training <-> serving
 │   │       ├── evaluate.py     # Champion/challenger gate metrics
 │   │       ├── drift.py        # PSI baselines and comparison
@@ -196,7 +201,8 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
   * `dbt_transform/`: The feature engineering engine. Contains the dbt project configuration, SQL models, and dependencies required to transform raw CDC telemetry into structured, ML-ready feature matrices.
   * `training_pipeline/`: The KFP pipeline definition package. Contains `build_pipeline()` and `compile_pipeline()` — used by Cloud Build to compile the six-stage training DAG into a Vertex AI Pipelines YAML, and `upload_pipeline()` to push that template into the `pipeline-templates` Artifact Registry repo via `kfp.registry.RegistryClient`. This package is never containerised; it installs only `kfp` and `modeling` (for HPO defaults). It has its own dedicated `training-pipeline-trigger`, decoupled from the trainer/post-training/serving image builds, so pipeline-structure-only changes don't force a container rebuild.
   * `obs_common/`: The MLE-owned observability package. Contains `configure_logging()`, the Cloud Logging-aware replacement for `logging.basicConfig` that every container entrypoint calls at startup — see [observability.md](observability.md#log-severity). Deliberately stdlib-only: it is the one package installed into *every* image, including `data_generator`, which carries no ML or GCP libraries beyond the BigQuery client, so any dependency added here would land in all of them.
-  * `ml_common/`: The DS-owned inference logic package. Contains feature preprocessing, the champion/challenger metrics gate, PSI drift, the data-quality assertions, and — in `contracts/` and `config.py` — the data schemas and model policy every other package shares. Pure Python, no GCP dependencies, and critically no Optuna/SHAP. Shared by `modeling` (training), `post_training` (the champion/challenger gate), `drift_monitor`, `trainer` and `serving` (batch prediction), so none of those containers install training-only dependencies. See [Data Contracts & Configuration](#data-contracts--configuration).
+  * `data_contracts/`: The platform's shared data schemas — every Pydantic model for a payload that crosses a container or storage boundary, plus `to_json`, the serialiser those payloads are written with. Its only dependency is `pydantic`, which is the entire reason it is its own package rather than part of `ml_common`: `dashboard` needs to agree with the serving container on a column name, and reaching that agreement through `ml-common` would pull xgboost and scikit-learn into an image that renders charts. Same discipline as `obs_common`, applied to dependencies rather than to the standard library. See [Data Contracts & Configuration](#data-contracts--configuration).
+  * `ml_common/`: The DS-owned inference logic package. Contains feature preprocessing, the champion/challenger metrics gate, PSI drift, the data-quality assertions, and — in `config.py` — the env-driven model policy every training and evaluation stage reads. Pure Python, no GCP dependencies, and critically no Optuna/SHAP. Shared by `modeling` (training), `post_training` (the champion/challenger gate), `drift_monitor`, `trainer` and `serving` (batch prediction), so none of those containers install training-only dependencies.
   * `modeling/`: The DS-owned training/HPO package. Contains XGBoost training and Optuna HPO, depending on `ml_common` for preprocessing — pure Python with no GCP dependencies. Unit-testable without cloud credentials.
   * `trainer/`: The MLE-owned heavy pipeline wrapper. Imports `modeling`/`ml_common` as workspace dependencies and adds GCP I/O for the `data_split`/`hpo`/`train` stages: BigQuery → GCS Parquet export and Vertex AI Experiments logging. Produces the trainer container image.
   * `post_training/`: The MLE-owned post-training pipeline stage container. Imports `ml_common` only (no Optuna/SHAP) and adds GCP I/O for the `evaluate`/`register_or_reject`/`notify` CLI stages: the champion/challenger gate, Vertex AI Model Registry promotion, and the terminal outcome report (logging-only — see [observability.md](observability.md)). This container never serves live predictions — it only runs as one-shot KFP pipeline steps, each invoking a different CLI subcommand.
@@ -211,9 +217,9 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 
 Two concerns that look alike and are deliberately kept apart: the **shape** data has to have, and the **values** a deployment gets to choose.
 
-### Contracts — `ml_common/contracts/`
+### Contracts — the `data_contracts` package
 
-Every schema that crosses a process, container, or storage boundary is a Pydantic model declared once in `ml_common.contracts`, and validated at the boundary it crosses. In-process values — DataFrames, numpy arrays, the hyperparameter dict handed straight to XGBoost — are deliberately left alone: validating those costs readability and buys nothing.
+Every schema that crosses a process, container, or storage boundary is a Pydantic model declared once in `data_contracts`, and validated at the boundary it crosses. In-process values — DataFrames, numpy arrays, the hyperparameter dict handed straight to XGBoost — are deliberately left alone: validating those costs readability and buys nothing.
 
 | Contract | Written by | Read by |
 |----------|-----------|---------|
@@ -228,6 +234,8 @@ Every schema that crosses a process, container, or storage boundary is a Pydanti
 | `ActivityCdcRow` (`data_generator.schema`) | `data_generator.main` | `raw.activity_cdc`, then dbt |
 | `ChurnRiskRow`, `ChurnRiskDailyRow` (`dashboard.schema`) | the dbt marts | `dashboard.data`, checked on every fetch |
 
+The first eight rows live in the shared `data_contracts` package; the last two are package-local — see below for the rule that decides which.
+
 Three properties make these safe to evolve rather than merely strict:
 
 * **Tolerant reading.** `ModelMetadata` and the baseline specs use `extra="allow"` and mark as optional every field added after a champion could have been registered. A model serving today may predate a field, and its artifact cannot be rewritten without retraining it or running `scripts/rebuild_champion_baseline.py`. *Absent* means something specific in each case — see the module docstring in `contracts/baseline.py`.
@@ -240,7 +248,7 @@ The contracts also own the field-name constants (`CHURN_PROBABILITY_FIELD`, `CHU
 
 This applies only to contracts over DataFrames. Every other contract here is validated over JSON — GCS artifacts, KFP artifact files, Batch Prediction JSONL — where a null really is `None`. And the ML path itself needs no normalisation: `drift`, `data_quality` and `preprocess` go through `.isna()`, `dropna()` and `pd.to_numeric()`, which are agnostic to which spelling they get. Forcing one representation at the read instead would mean pushing pandas extension dtypes onto the training and serving frames, which `trainer.data.read_split` deliberately moved *away* from — so the normalisation belongs at the validation boundary, not at the query.
 
-`dashboard` is the one package that declares its contracts locally rather than importing them. It never loads a model or scores anything, so depending on `ml-common` would pull xgboost and scikit-learn into an image that renders charts; its models describe the dbt marts it reads, which are owned by dbt rather than by the serving container, and a test asserts them against the mart SQL. See [dashboard.md](dashboard.md#the-contract-with-those-views).
+**What does *not* live here** is as deliberate as what does: a contract earns a place in the shared package by being touched by more than one deployable. `ActivityCdcRow` (`data_generator.schema`) is written by the generator and read by dbt in SQL; `ChurnRiskRow`/`ChurnRiskDailyRow` (`dashboard.schema`) are written by dbt in SQL and read by the dashboard. Neither has a second Python consumer, so each stays with the one package that has it — and keeping them out is what lets `data_contracts` stay pandas-free, which in turn keeps it installable in the pandas-free `data_generator` image. The dashboard still imports the two *model-output* column names from here, because those genuinely are shared with the serving container that writes them. See [dashboard.md](dashboard.md#the-contract-with-those-views).
 
 ### Configuration — settings, not constants
 

@@ -5,13 +5,13 @@ import pathlib
 
 import numpy as np
 import pandas as pd
-from ml_common import evaluate as ml_evaluate
-from ml_common.contracts import (
+from data_contracts import (
     BatchPredictionRecord,
     EvaluationMetrics,
     ModelMetadata,
     PromotionDecision,
 )
+from ml_common import evaluate as ml_evaluate
 from ml_common.preprocess import prepare_features
 
 from post_training.bigquery import read_split

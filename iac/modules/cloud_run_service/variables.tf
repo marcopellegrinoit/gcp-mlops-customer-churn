@@ -53,6 +53,12 @@ variable "max_instances" {
   default     = 3
 }
 
+variable "max_concurrency" {
+  description = "Requests one instance serves at once. For a Streamlit container a request is a session-long WebSocket, so this is really a ceiling on simultaneous readers."
+  type        = number
+  default     = 20
+}
+
 variable "request_timeout" {
   type    = string
   default = "3600s"

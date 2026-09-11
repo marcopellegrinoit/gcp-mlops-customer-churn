@@ -12,6 +12,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY projects/obs_common/pyproject.toml projects/obs_common/
 COPY projects/obs_common/src projects/obs_common/src/
+COPY projects/data_contracts/pyproject.toml projects/data_contracts/
+COPY projects/data_contracts/src projects/data_contracts/src/
 COPY projects/ml_common/pyproject.toml projects/ml_common/
 COPY projects/ml_common/src projects/ml_common/src/
 COPY projects/modeling/pyproject.toml projects/modeling/

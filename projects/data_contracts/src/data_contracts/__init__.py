@@ -10,29 +10,29 @@ this package is about the shape data has to have, which is not something a deplo
 change.
 """
 
-from ml_common.contracts.baseline import (
+from data_contracts.baseline import (
     BaselineSpec,
     CategoricalBaseline,
     DiscreteBaseline,
     NumericBaseline,
     parse_baseline_stats,
 )
-from ml_common.contracts.drift import (
+from data_contracts.drift import (
     DataQualityReport,
     DriftDecision,
     DriftMetricRow,
     NullRateComparison,
     QualityFailure,
 )
-from ml_common.contracts.evaluation import (
+from data_contracts.evaluation import (
     EvaluationMetrics,
     ModelMetrics,
     PromotionDecision,
     RegistrationResult,
     RejectionState,
 )
-from ml_common.contracts.metadata import ModelMetadata
-from ml_common.contracts.predictions import (
+from data_contracts.metadata import ModelMetadata
+from data_contracts.predictions import (
     CHURN_PREDICTION_FIELD,
     CHURN_PROBABILITY_FIELD,
     BatchPredictionRecord,
@@ -40,8 +40,8 @@ from ml_common.contracts.predictions import (
     PredictRequest,
     PredictResponse,
 )
-from ml_common.contracts.serde import to_json
-from ml_common.contracts.splits import SplitRef
+from data_contracts.serde import to_json
+from data_contracts.splits import SplitRef
 
 __all__ = [
     "CHURN_PREDICTION_FIELD",

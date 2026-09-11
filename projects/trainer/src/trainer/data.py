@@ -3,9 +3,9 @@
 import json
 
 import pandas as pd
+from data_contracts import SplitRef
 from google.cloud import bigquery, storage
 from ml_common.config import get_settings
-from ml_common.contracts import SplitRef
 
 
 def export_snapshot(

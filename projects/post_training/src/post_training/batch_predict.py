@@ -2,9 +2,9 @@
 
 import uuid
 
+from data_contracts import SplitRef
 from google.cloud import bigquery
 from ml_common.config import get_settings
-from ml_common.contracts import SplitRef
 
 
 def create_batch_source_files(test_uri: str, project_id: str, gcs_uri_prefix: str) -> str:

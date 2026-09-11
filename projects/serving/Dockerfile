@@ -10,6 +10,8 @@ WORKDIR /app
 
 # Copy workspace root manifest and lock, then both package manifests and sources
 COPY pyproject.toml uv.lock ./
+COPY projects/data_contracts/pyproject.toml projects/data_contracts/
+COPY projects/data_contracts/src projects/data_contracts/src/
 COPY projects/ml_common/pyproject.toml projects/ml_common/
 COPY projects/ml_common/src projects/ml_common/src/
 COPY projects/serving/pyproject.toml projects/serving/

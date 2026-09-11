@@ -11,9 +11,9 @@ overwritten-daily GCS decision file cannot express.
 import logging
 
 import pandas as pd
+from data_contracts import CHURN_PROBABILITY_FIELD, DriftDecision, DriftMetricRow
 from google.cloud import bigquery
 from ml_common.config import get_settings
-from ml_common.contracts import CHURN_PROBABILITY_FIELD, DriftDecision, DriftMetricRow
 
 log = logging.getLogger(__name__)
 

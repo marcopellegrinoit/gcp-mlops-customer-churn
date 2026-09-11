@@ -47,3 +47,8 @@ output "cloud_run_service_accounts" {
   description = "Service account emails for Cloud Run Services."
   value       = { for k, v in module.cloud_run_service : k => v.service_account_email }
 }
+
+output "billing_budget_name" {
+  description = "Resource name of the monthly budget alert, or null when no billing account is configured."
+  value       = one(module.billing_budget[*].budget_name)
+}

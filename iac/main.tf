@@ -66,6 +66,7 @@ module "cloud_run_service" {
   memory                        = try(each.value.memory, "1Gi")
   min_instances                 = try(each.value.min_instances, 0)
   max_instances                 = try(each.value.max_instances, 3)
+  max_concurrency               = try(each.value.max_concurrency, 20)
   env_vars                      = try(each.value.env_vars, {})
   bq_dataset_roles              = try(each.value.bq_dataset_roles, {})
   service_account_project_roles = try(each.value.service_account_project_roles, [])
@@ -225,4 +226,32 @@ module "cloud_workflow" {
   )
 
   depends_on = [google_project_service.apis, module.bq_dataset, module.cloud_run_job, module.gcs_bucket, module.vertex_ai_pipeline]
+}
+
+# Spend alerting for the whole project, not just the dashboard. Every cost control in this
+# repo is a per-resource ceiling — max_instance_count, MAX_BYTES_BILLED, max_retries, the
+# HPO trial budget — and each of them bounds one runaway in isolation. None of them notices
+# a bill climbing across several at once, or a resource nobody thought to cap. This does.
+#
+# The billing account is read off the project (see locals.tf), so this needs no input to
+# work. It is still conditional: a project with no billing account attached gets no budget
+# rather than a failed apply — though such a project cannot run any of the rest of this
+# either.
+#
+# The one permission to know about: a budget is created *on the billing account*, not the
+# project, so the identity running `apply` needs roles/billing.costsManager there. On a
+# personal account the project owner is already the billing admin and this is automatic;
+# with a deployer service account it is an explicit grant.
+module "billing_budget" {
+  source = "./modules/billing_budget"
+  count  = local.billing_account_id != "" ? 1 : 0
+
+  project_id          = var.project_id
+  project_number      = data.google_project.this.number
+  billing_account_id  = local.billing_account_id
+  display_name        = "Customer churn MLOps platform"
+  amount              = var.monthly_budget_amount
+  notification_emails = var.budget_alert_emails
+
+  depends_on = [google_project_service.apis]
 }

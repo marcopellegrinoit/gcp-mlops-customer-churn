@@ -3,16 +3,16 @@
 import time
 import uuid
 
-from google.cloud import aiplatform
-from google.cloud import exceptions as gcs_exceptions
-from ml_common.config import get_settings
-from ml_common.contracts import (
+from data_contracts import (
     EvaluationMetrics,
     PromotionDecision,
     RegistrationResult,
     RejectionState,
     to_json,
 )
+from google.cloud import aiplatform
+from google.cloud import exceptions as gcs_exceptions
+from ml_common.config import get_settings
 
 from post_training.storage import download_json, upload_text
 

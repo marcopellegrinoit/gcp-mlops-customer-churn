@@ -17,6 +17,7 @@ supported-markers = [
 [manifest]
 members = [
     "dashboard",
+    "data-contracts",
     "data-generator",
     "drift-monitor",
     "ml-common",
@@ -444,6 +445,7 @@ version = "0.1.0"
 source = { editable = "projects/dashboard" }
 dependencies = [
     { name = "altair", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
+    { name = "data-contracts", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "db-dtypes", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-bigquery", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "obs-common", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -463,6 +465,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "altair", specifier = ">=6,<7" },
+    { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "db-dtypes", specifier = ">=1.2,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3,<4" },
     { name = "obs-common", editable = "projects/obs_common" },
@@ -473,6 +476,28 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "streamlit", specifier = ">=1.42,<2" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "data-contracts"
+version = "0.1.0"
+source = { editable = "projects/data_contracts" }
+dependencies = [
+    { name = "pydantic", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
+    { name = "pytest-cov", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = "==2.13.4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
 ]
 provides-extras = ["dev"]
 
@@ -568,6 +593,7 @@ name = "drift-monitor"
 version = "0.1.0"
 source = { editable = "projects/drift_monitor" }
 dependencies = [
+    { name = "data-contracts", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "db-dtypes", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-aiplatform", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-bigquery", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -587,6 +613,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "db-dtypes", specifier = ">=1.7.1,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
@@ -1469,10 +1496,10 @@ name = "ml-common"
 version = "0.1.0"
 source = { editable = "projects/ml_common" }
 dependencies = [
+    { name = "data-contracts", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "pandas", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "pyarrow", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
-    { name = "pydantic", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "pydantic-settings", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "scikit-learn", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "xgboost", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -1486,10 +1513,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "numpy", specifier = "==2.5.2" },
     { name = "pandas", specifier = "==3.0.3" },
     { name = "pyarrow", specifier = "==24.0.0" },
-    { name = "pydantic", specifier = "==2.13.4" },
     { name = "pydantic-settings", specifier = "==2.15.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
@@ -1791,6 +1818,7 @@ name = "post-training"
 version = "0.1.0"
 source = { editable = "projects/post_training" }
 dependencies = [
+    { name = "data-contracts", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "db-dtypes", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-aiplatform", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-bigquery", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -1810,6 +1838,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "db-dtypes", specifier = ">=1.7.1,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
@@ -2378,6 +2407,7 @@ name = "serving"
 version = "0.1.0"
 source = { editable = "projects/serving" }
 dependencies = [
+    { name = "data-contracts", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "fastapi", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-storage", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "ml-common", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -2399,6 +2429,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "fastapi", specifier = ">=0.141.1,<1" },
     { name = "google-cloud-storage", specifier = ">=3.0.0,<4" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
@@ -2628,6 +2659,7 @@ name = "trainer"
 version = "0.1.0"
 source = { editable = "projects/trainer" }
 dependencies = [
+    { name = "data-contracts", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "db-dtypes", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-aiplatform", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
     { name = "google-cloud-bigquery", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or sys_platform == 'linux'" },
@@ -2653,6 +2685,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "db-dtypes", specifier = ">=1.7.1,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },

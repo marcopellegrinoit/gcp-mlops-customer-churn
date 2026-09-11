@@ -15,8 +15,8 @@ import argparse
 import json
 import pathlib
 
+from data_contracts import to_json
 from ml_common.config import get_settings as get_ml_settings
-from ml_common.contracts import to_json
 from modeling.config import get_settings as get_modeling_settings
 from obs_common.logging import configure_logging
 

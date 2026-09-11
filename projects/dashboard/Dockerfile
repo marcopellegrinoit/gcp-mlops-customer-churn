@@ -13,6 +13,8 @@ WORKDIR /app
 # ml_common (and through it xgboost and scikit-learn) has no business in this image. Per
 # architecture.md, this COPY set is the enforcement point for that boundary.
 COPY pyproject.toml uv.lock ./
+COPY projects/data_contracts/pyproject.toml projects/data_contracts/
+COPY projects/data_contracts/src projects/data_contracts/src/
 COPY projects/obs_common/pyproject.toml projects/obs_common/
 COPY projects/obs_common/src projects/obs_common/src/
 COPY projects/dashboard/pyproject.toml projects/dashboard/

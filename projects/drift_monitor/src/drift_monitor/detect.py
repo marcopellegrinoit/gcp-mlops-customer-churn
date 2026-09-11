@@ -3,14 +3,14 @@
 import logging
 
 import pandas as pd
-from google.cloud import aiplatform
-from ml_common.contracts import (
+from data_contracts import (
     CHURN_PROBABILITY_FIELD,
     DataQualityReport,
     DriftDecision,
     ModelMetadata,
     QualityFailure,
 )
+from google.cloud import aiplatform
 from ml_common.data_quality import check_data_quality
 from ml_common.drift import compute_psi, evaluate_drift, psi_noise_floor
 from ml_common.preprocess import select_inference_features

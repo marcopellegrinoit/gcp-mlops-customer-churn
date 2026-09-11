@@ -14,7 +14,7 @@ reader has been redeployed.
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ml_common.contracts.baseline import BaselineSpec
+from data_contracts.baseline import BaselineSpec
 
 
 class ModelMetadata(BaseModel):

@@ -10,7 +10,7 @@ THRESHOLD is passed as a container env var at BatchPredictionJob creation time
 the same decision threshold used during the evaluate stage, applied identically
 at serving time.
 
-The request and response bodies are ml_common.contracts models, so what this container
+The request and response bodies are data_contracts models, so what this container
 emits is the same declared shape post_training.evaluate parses back out of the Batch
 Prediction output when it decides whether to promote a model.
 """
@@ -18,8 +18,8 @@ Prediction output when it decides whether to promote a model.
 from contextlib import asynccontextmanager
 
 import pandas as pd
+from data_contracts import ChurnPrediction, ModelMetadata, PredictRequest, PredictResponse
 from fastapi import FastAPI, HTTPException
-from ml_common.contracts import ChurnPrediction, ModelMetadata, PredictRequest, PredictResponse
 from ml_common.preprocess import select_inference_features
 
 from serving.predict import load_model

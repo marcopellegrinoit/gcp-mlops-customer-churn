@@ -2,8 +2,8 @@
 
 import json
 
+from data_contracts import DriftDecision, to_json
 from google.cloud import storage
-from ml_common.contracts import DriftDecision, to_json
 
 
 def download_json(gcs_uri: str) -> dict:
@@ -16,7 +16,7 @@ def download_json(gcs_uri: str) -> dict:
 def upload_decision(gcs_uri: str, decision: DriftDecision) -> None:
     """Write this run's decision to GCS, where the orchestrator workflow reads it back.
 
-    Serialised through ml_common.contracts.to_json, which omits unset fields — the workflow
+    Serialised through data_contracts.to_json, which omits unset fields — the workflow
     distinguishes an absent optional section (no score check ran, no data-quality report)
     from a present-and-false one via map.get defaults.
     """

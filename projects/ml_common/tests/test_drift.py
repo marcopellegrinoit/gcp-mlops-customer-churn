@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 import pytest
-from ml_common.contracts import DiscreteBaseline, parse_baseline_stats
+from data_contracts import DiscreteBaseline, parse_baseline_stats
 from ml_common.drift import (
     compute_baseline_stats,
     compute_psi,

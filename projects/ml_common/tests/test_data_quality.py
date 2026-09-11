@@ -3,8 +3,8 @@
 import numpy as np
 import pandas as pd
 import pytest
+from data_contracts import CHURN_PROBABILITY_FIELD, BaselineSpec, DataQualityReport
 from ml_common.config import MLSettings
-from ml_common.contracts import CHURN_PROBABILITY_FIELD, BaselineSpec, DataQualityReport
 from ml_common.data_quality import check_data_quality
 from ml_common.drift import compute_baseline_stats
 

@@ -9,6 +9,8 @@ dependencies = [
     # predictions it's handed, so it needs ml-common for that plus pandas/preprocess helpers,
     # not xgboost/scikit-learn directly.
     "ml-common",
+    # Shared data schemas — imported directly, so declared directly.
+    "data-contracts",
     # MLE package — stdlib-only Cloud Logging setup, shared by every container entrypoint.
     "obs-common",
     "pandas>=3,<4",
@@ -28,6 +30,7 @@ dev = [
 ]
 
 [tool.uv.sources]
+data-contracts = { workspace = true }
 ml-common = { workspace = true }
 obs-common = { workspace = true }
 

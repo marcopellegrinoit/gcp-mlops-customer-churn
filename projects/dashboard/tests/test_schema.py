@@ -14,6 +14,7 @@ from dashboard.schema import (
     require_columns,
     validate_trend,
 )
+from data_contracts import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD, ChurnPrediction
 
 _MARTS = Path(__file__).parents[2] / "dbt_transform/models/marts"
 
@@ -74,12 +75,25 @@ def test_every_required_column_is_emitted_by_the_mart(model, mart):
 
 
 def test_the_prediction_columns_match_the_serving_contract():
-    # churn_probability is written by the serving container as
-    # ml_common.contracts.ChurnPrediction, flows through ml.predictions, and arrives here.
-    # This app cannot import ml-common (it would pull in xgboost for no benefit), so the
-    # name is asserted against the SQL that carries it instead of against the model.
-    assert "churn_probability" in _selected_columns(_MARTS / "churn_risk_current.sql")
-    assert "churn_probability" in ChurnRiskRow.model_fields
+    """The column this dashboard reads is the one the serving container writes.
+
+    churn_probability is produced by the serving container as
+    data_contracts.ChurnPrediction, synced into ml.predictions, and surfaced by the mart.
+    All three points are pinned here: the shared model's own field name, the mart SQL that
+    carries it, and this app's row contract. Renaming it anywhere fails this test rather
+    than quietly emptying a column in the worklist.
+    """
+    emitted = _selected_columns(_MARTS / "churn_risk_current.sql")
+
+    assert CHURN_PROBABILITY_FIELD in ChurnPrediction.model_fields
+    assert CHURN_PROBABILITY_FIELD in emitted
+    assert CHURN_PROBABILITY_FIELD in ChurnRiskRow.model_fields
+
+    # churn_prediction is the thresholded label. The dashboard bands on the probability
+    # instead (see docs/dashboard.md), so it does not read this column — but the mart still
+    # carries it, and churn_risk_daily aggregates it into predicted_churn_rate.
+    assert CHURN_PREDICTION_FIELD in ChurnPrediction.model_fields
+    assert CHURN_PREDICTION_FIELD in emitted
 
 
 # ---------------------------------------------------------------------------

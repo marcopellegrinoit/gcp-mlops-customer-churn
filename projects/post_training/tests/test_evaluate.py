@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import post_training.evaluate as evaluate_module
 import pytest
-from ml_common.contracts import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
+from data_contracts import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
 from post_training.evaluate import read_batch_predictions, run_evaluate_stage
 
 

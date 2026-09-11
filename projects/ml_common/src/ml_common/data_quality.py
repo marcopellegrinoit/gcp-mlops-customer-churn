@@ -24,15 +24,15 @@ env var can move them without an image rebuild.
 from collections.abc import Mapping
 
 import pandas as pd
-
-from ml_common.config import MLSettings, get_settings
-from ml_common.contracts import (
+from data_contracts import (
     CHURN_PROBABILITY_FIELD,
     BaselineSpec,
     DataQualityReport,
     QualityFailure,
     parse_baseline_stats,
 )
+
+from ml_common.config import MLSettings, get_settings
 
 
 def check_data_quality(

@@ -3,8 +3,8 @@
 import drift_monitor.history as history_module
 import pandas as pd
 import pytest
+from data_contracts import CHURN_PROBABILITY_FIELD, DriftDecision
 from ml_common.config import get_settings
-from ml_common.contracts import CHURN_PROBABILITY_FIELD, DriftDecision
 
 _RUN_TS = pd.Timestamp("2026-09-11T02:00:00Z")
 

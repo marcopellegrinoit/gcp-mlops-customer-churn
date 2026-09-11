@@ -1,9 +1,9 @@
 """Read back the champion's live production scores for score-distribution drift monitoring."""
 
 import pandas as pd
+from data_contracts import CHURN_PROBABILITY_FIELD
 from google.cloud import aiplatform, bigquery
 from google.cloud.aiplatform_v1.types.job_state import JobState
-from ml_common.contracts import CHURN_PROBABILITY_FIELD
 
 
 def fetch_latest_predictions(

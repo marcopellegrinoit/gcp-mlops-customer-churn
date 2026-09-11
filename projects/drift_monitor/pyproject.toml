@@ -6,6 +6,8 @@ dependencies = [
     # DS package — resolved as a workspace path dependency by uv. Only needed for the
     # shared PSI logic and the training-time feature column conventions.
     "ml-common",
+    # Shared data schemas — imported directly, so declared directly.
+    "data-contracts",
     # MLE package — stdlib-only Cloud Logging setup, shared by every container entrypoint.
     "obs-common",
     "pandas>=3,<4",
@@ -26,6 +28,7 @@ dev = [
 ]
 
 [tool.uv.sources]
+data-contracts = { workspace = true }
 ml-common = { workspace = true }
 obs-common = { workspace = true }
 

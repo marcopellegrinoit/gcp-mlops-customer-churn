@@ -36,6 +36,7 @@ Every GCP resource lives inside a dedicated module under `iac/modules/`. The roo
 | `gcs_bucket/` | Creates `google_storage_bucket` resources + optional bucket-level IAM bindings |
 | `vertex_ai_pipeline/` | Creates the dedicated SA the training pipeline runs as + its IAM bindings |
 | `secret_manager/` | Creates a `google_secret_manager_secret` + initial version |
+| `billing_budget/` | Creates a project-scoped `google_billing_budget` + the email notification channels it delivers through |
 
 ## Runtime Configuration
 
@@ -76,7 +77,11 @@ One service exists: `dashboard-service`, the business-user churn dashboard. The 
 
 The service's `ingress` is `INGRESS_TRAFFIC_ALL`, which the direct IAP integration requires — IAP fronts the public `run.app` path. The authorisation boundary is the IAM binding, not the network.
 
-**Scaling that stays free.** `min_instance_count = 0`. Cloud Run's always-free allowance is 180k vCPU-seconds a month against roughly 2.6M for one instance pinned warm through a 730-hour month, so `min_instances = 1` would leave the free tier by about 15×. `startup_cpu_boost` absorbs the resulting cold start; `max_instances` caps a runaway. `cpu_idle = false` is required in the other direction — Streamlit serves each session over a long-lived WebSocket from a per-process cache, so throttling CPU between requests would stall it.
+**Scaling that stays free.** `min_instance_count = 0`. Cloud Run's always-free allowance is 180k vCPU-seconds a month against roughly 2.6M for one instance pinned warm through a 730-hour month, so `min_instances = 1` would leave the free tier by about 15×. `startup_cpu_boost` absorbs the resulting cold start. `cpu_idle = false` is required in the other direction — Streamlit serves each session over a long-lived WebSocket from a per-process cache, so throttling CPU between requests would stall it.
+
+`max_instance_count = 1`, and that is the ceiling on the service's whole compute bill: three instances pinned for a month would be roughly 7.8M vCPU-seconds, about 40× the free allowance. One instance serves this platform's readership with room to spare, so a second one starting would be a symptom rather than a need — see [dashboard.md](dashboard.md#the-abuse-surface).
+
+**An explicit concurrency ceiling.** `max_instance_request_concurrency = 20`, against Cloud Run's default of 80. A "request" to a Streamlit container is a session-long WebSocket, and `st.cache_data` hands each script run its own *copy* of the cached snapshot, so concurrent readers are concurrent copies of the scored base inside a 1 GiB container. At 80 the instance OOMs — dropping every live session and discarding the cache, which costs two BigQuery queries to rebuild. At 20 the reader who would have been the last straw gets a clean 429 instead. With `max_instances = 1` this is the service's total simultaneous-reader ceiling rather than a scale-out trigger, which is the intended behaviour here.
 
 **A real startup probe.** Without an explicit probe Cloud Run uses a TCP check that succeeds as soon as the port is bound — before the app can serve — so the first request of a cold start lands on a server that is not ready. The module probes Streamlit's own `/_stcore/health`.
 
@@ -135,6 +140,26 @@ The `alert_email` and `alert_from_email` variables both flow the same way: root 
 ## SendGrid Secret (`secret_manager` module)
 
 `secret_manager` is a minimal, general-purpose module (`google_secret_manager_secret` only) used once today, for `sendgrid-api-key`. It deliberately provisions just the empty container, not a `google_secret_manager_secret_version` — the API key is a credential that should never pass through a `.tf` variable or Terraform state, so it's added by hand after `apply` (`gcloud secrets versions add sendgrid-api-key --data-file=-`, or via the console). With no version yet, `orchestrator-workflow`'s `get_sendgrid_key` subworkflow 404s on `versions/latest:access`, which its `try`/`except` wrapper swallows (see [observability.md](observability.md)). The orchestrator workflow's SA already holds project-scoped `roles/secretmanager.secretAccessor` via `workflows.yaml`, so adding a version by hand is the only step needed to make delivery work — no IAM changes, no Terraform changes.
+
+## Budget Alerting (`billing_budget` module)
+
+Every other cost control in this repository is a per-resource ceiling: `max_instance_count` on the Cloud Run service, `MAX_BYTES_BILLED` on every dashboard query, `max_retries` on the jobs, the HPO trial budget in `triggers.yaml`. Each bounds one runaway in isolation, and none of them notices a bill climbing across several at once — or a resource nobody thought to cap. The budget is the backstop that does.
+
+It is a **notification, not a cap.** GCP has no mechanism that stops spend, so what this buys is time-to-discovery: hours instead of a billing cycle. Four rules fire — actual spend at 50%, 90% and 100% of `monthly_budget_amount`, plus *forecasted* spend at 100%. The forecast rule is the one that matters for a platform designed to live inside the free tiers: actual spend crossing 50% tells you the month is already half gone, while a forecast crossing 100% fires on the trend, catching a service that started billing yesterday and will keep billing until someone looks.
+
+The budget is scoped to this project by number (`projects/<number>`), the only form the Budgets API accepts. Unscoped it would cover every project on the billing account, and an alert would say nothing about whether *this* platform is what is costing money.
+
+**The billing account is derived, not configured.** Every project that can run this platform is already attached to one — that attachment is what makes BigQuery and Cloud Run billable at all — so `locals.tf` reads it from `data.google_project.this.billing_account` rather than asking for a value Terraform can already see. `var.billing_account_id` remains as an override for the case where the budget belongs on a different account than the project bills to. The module is still `count = 0` when the derived value is empty, which happens only for a project with no billing account attached — a project that cannot run the rest of this either.
+
+What the budget *does* need is a permission, and it is the one permission in this repository that does not come from the project: a budget is created on the billing account, so the identity running `apply` needs `roles/billing.costsManager` there. A personal project's owner already has it; a deployer service account needs an explicit grant (see [setup.md](setup.md)).
+
+```hcl
+# iac/terraform.tfvars — the account is detected, so only these two are worth setting
+monthly_budget_amount = 10
+budget_alert_emails   = ["you@example.com"]
+```
+
+`budget_alert_emails` is additive, not a replacement: each address becomes a `google_monitoring_notification_channel`, and `disable_default_iam_recipients = false` keeps the billing account's own admins on the distribution. Left empty, no `all_updates_rule` is written at all and the Budgets API falls back to emailing those admins — which is why the block is `dynamic` rather than declared with an empty channel list, since an empty list would silence it instead.
 
 ## Provisioned Resources
 

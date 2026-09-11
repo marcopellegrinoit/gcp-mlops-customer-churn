@@ -104,6 +104,24 @@ dashboard_viewers = ["group:retention-team@example.com"]
 # Only for a project with no Cloud organization — see step 4 above.
 dashboard_oauth_client_id     = ""
 dashboard_oauth_client_secret = ""
+
+# Monthly budget alert. The billing account is detected from the project, so there is
+# nothing to look up — set the amount and who to tell.
+monthly_budget_amount = 10
+budget_alert_emails   = ["you@example.com"]
+```
+
+The budget is a notification, not a cap — GCP has no control that stops spend. It exists so
+a runaway shows up in hours rather than at the end of a billing cycle; the actual ceilings
+are per-resource, and [iac.md](iac.md#budget-alerting-billing_budget-module) lists them.
+
+Creating it needs `roles/billing.costsManager` on the billing account, because the budget
+lives there rather than on the project. If you own the project you already have it. If
+`apply` is run by a deployer service account instead, grant it:
+
+```sh
+gcloud billing accounts add-iam-policy-binding "$(gcloud billing projects describe "$PROJECT_ID" --format='value(billingAccountName)' | cut -d/ -f2)" \
+  --member="serviceAccount:DEPLOYER_SA_EMAIL" --role="roles/billing.costsManager"
 ```
 
 **2. Set the GitHub connection name**

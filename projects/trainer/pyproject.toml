@@ -8,6 +8,8 @@ dependencies = [
     # ranges here let the DS bump versions without touching engineering code.
     "modeling",
     "ml-common",
+    # Shared data schemas — imported directly, so declared directly.
+    "data-contracts",
     # MLE package — stdlib-only Cloud Logging setup, shared by every container entrypoint.
     "obs-common",
     # Direct imports in trainer — loose ranges, exact pins owned by ml-common
@@ -35,6 +37,7 @@ dev = [
 ]
 
 [tool.uv.sources]
+data-contracts = { workspace = true }
 modeling = { workspace = true }
 ml-common = { workspace = true }
 obs-common = { workspace = true }

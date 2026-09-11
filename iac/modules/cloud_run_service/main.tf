@@ -52,6 +52,15 @@ resource "google_cloud_run_v2_service" "this" {
   template {
     service_account = google_service_account.this.email
 
+    # Cloud Run's default is 80, which this container cannot honour. Streamlit holds a
+    # WebSocket open per browser tab for as long as the tab lives, and st.cache_data hands
+    # each script run its *own copy* of the cached snapshot — so concurrent sessions are
+    # concurrent copies of the scored base in a 1 GiB container. At 80 the instance OOMs,
+    # which drops every session on it and throws away the cache, costing two BigQuery
+    # queries to rebuild. An explicit ceiling turns that into a clean 429 for the session
+    # that would have been the last straw. Lower it first if the instance ever OOMs.
+    max_instance_request_concurrency = var.max_concurrency
+
     scaling {
       # Zero, deliberately. Cloud Run's always-free allowance is 180k vCPU-seconds a month;
       # one instance pinned warm for a 730-hour month is roughly 2.6M, so min_instance_count

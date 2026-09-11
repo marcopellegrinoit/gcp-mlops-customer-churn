@@ -1,9 +1,9 @@
 """BigQuery read helpers for the champion/challenger evaluation stage."""
 
 import pandas as pd
+from data_contracts import SplitRef
 from google.cloud import bigquery
 from ml_common.config import get_settings
-from ml_common.contracts import SplitRef
 
 
 def read_split(ref: str, project_id: str) -> pd.DataFrame:

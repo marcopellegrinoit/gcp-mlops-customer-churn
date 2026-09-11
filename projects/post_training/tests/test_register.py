@@ -1,8 +1,8 @@
 """Unit tests for the register_or_reject stage (no GCP credentials required)."""
 
 import post_training.register as register_module
+from data_contracts import EvaluationMetrics, ModelMetrics, PromotionDecision
 from google.cloud import exceptions as gcs_exceptions
-from ml_common.contracts import EvaluationMetrics, ModelMetrics, PromotionDecision
 from post_training.register import register_or_reject
 
 

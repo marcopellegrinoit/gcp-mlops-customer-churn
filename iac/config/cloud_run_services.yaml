@@ -9,8 +9,17 @@ cloud_run_services:
     # Scale to zero. See the scaling block in modules/cloud_run_service/main.tf for why
     # min_instances = 1 would leave the Cloud Run free tier by roughly 15x.
     min_instances: 0
-    # A handful of business users, and a hard stop on runaway spend if something loops.
-    max_instances: 3
+    # One. This is a demonstration platform read by a handful of people, and a single
+    # instance serves that with room to spare — so scaling out would only ever be the
+    # symptom of something going wrong, and there is no reason to pay for the second and
+    # third instance that a runaway would otherwise start. Raise it if real usage ever
+    # makes max_concurrency the binding constraint.
+    max_instances: 1
+    # With max_instances at 1 this is the whole service's simultaneous-reader ceiling,
+    # not a scale-out trigger: request 21 is refused rather than starting an instance.
+    # That is the intended behaviour — see the comment on max_instance_request_concurrency
+    # in modules/cloud_run_service/main.tf for why 80 is the wrong number here.
+    max_concurrency: 20
     env_vars:
       BQ_LOCATION: "europe-west1"
       # Both are views, scoped in SQL to a single snapshot (risk) or to narrow aggregate

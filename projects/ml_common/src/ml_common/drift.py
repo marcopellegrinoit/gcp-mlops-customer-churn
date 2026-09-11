@@ -40,8 +40,7 @@ from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
-
-from ml_common.contracts import (
+from data_contracts import (
     BaselineSpec,
     CategoricalBaseline,
     DiscreteBaseline,
@@ -50,6 +49,7 @@ from ml_common.contracts import (
     NumericBaseline,
     parse_baseline_stats,
 )
+
 from ml_common.preprocess import CATEGORICAL_COLS
 
 log = logging.getLogger(__name__)

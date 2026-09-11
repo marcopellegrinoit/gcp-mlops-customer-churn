@@ -63,3 +63,35 @@ variable "dashboard_oauth_client_secret" {
   default     = ""
   sensitive   = true
 }
+
+variable "billing_account_id" {
+  description = <<-EOT
+    Override for which billing account the monthly budget alert is created under.
+
+    Normally leave this empty: the account the project already bills to is read from
+    data.google_project and used automatically, so the budget needs no configuration. Set it
+    only to put the budget on a different account than the project's own.
+
+    Note the one permission involved — a budget is created on the billing account rather than
+    the project, so whoever runs `apply` needs roles/billing.costsManager there. A personal
+    project's owner already has it.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "monthly_budget_amount" {
+  description = <<-EOT
+    Monthly budget in the billing account's currency. The platform is designed to sit inside
+    the always-free tiers, so this is not a forecast of expected spend — it is the number
+    above which something has gone wrong and you want to hear about it.
+  EOT
+  type        = number
+  default     = 10
+}
+
+variable "budget_alert_emails" {
+  description = "Addresses that receive budget threshold alerts. Empty falls back to the billing account's admins and users."
+  type        = list(string)
+  default     = []
+}

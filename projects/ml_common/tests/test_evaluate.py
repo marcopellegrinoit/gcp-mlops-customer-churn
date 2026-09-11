@@ -2,8 +2,8 @@
 
 import numpy as np
 import pytest
+from data_contracts import EvaluationMetrics, ModelMetrics
 from ml_common.config import MLSettings
-from ml_common.contracts import EvaluationMetrics, ModelMetrics
 from ml_common.evaluate import _spearman_rank_correlation, decide, select_threshold
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
-from ml_common.contracts import (
+from data_contracts import (
     CHURN_PREDICTION_FIELD,
     CHURN_PROBABILITY_FIELD,
     BatchPredictionRecord,

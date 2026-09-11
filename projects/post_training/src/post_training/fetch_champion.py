@@ -1,7 +1,7 @@
 """Look up the current champion model so it can be scored via Vertex AI Batch Prediction."""
 
+from data_contracts import ModelMetadata
 from google.cloud import aiplatform
-from ml_common.contracts import ModelMetadata
 
 from post_training.storage import download_json
 

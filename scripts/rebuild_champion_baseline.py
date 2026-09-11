@@ -28,6 +28,7 @@ on the fly — it has no pyproject.toml and is not part of the repo's uv workspa
 #   "google-cloud-aiplatform>=1.70,<2",
 #   "google-cloud-bigquery>=3,<4",
 #   "google-cloud-storage>=3,<4",
+#   "data-contracts",
 #   "ml-common",
 #   "pandas>=2",
 #   "xgboost>=2,<4",
@@ -35,6 +36,7 @@ on the fly — it has no pyproject.toml and is not part of the repo's uv workspa
 # ]
 #
 # [tool.uv.sources]
+# data-contracts = { path = "../projects/data_contracts", editable = true }
 # ml-common = { path = "../projects/ml_common", editable = true }
 # ///
 
@@ -45,14 +47,14 @@ import tempfile
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from google.cloud import aiplatform, bigquery, storage
-from ml_common.config import get_settings
-from ml_common.contracts import (
+from data_contracts import (
     CHURN_PROBABILITY_FIELD,
     BaselineSpec,
     ModelMetadata,
     to_json,
 )
+from google.cloud import aiplatform, bigquery, storage
+from ml_common.config import get_settings
 from ml_common.drift import compute_baseline_stats
 from ml_common.preprocess import prepare_features
 

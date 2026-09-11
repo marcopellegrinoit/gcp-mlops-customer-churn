@@ -1,6 +1,7 @@
 [tool.uv.workspace]
 members = [
     "projects/obs_common",
+    "projects/data_contracts",
     "projects/ml_common",
     "projects/data_generator",
     "projects/modeling",

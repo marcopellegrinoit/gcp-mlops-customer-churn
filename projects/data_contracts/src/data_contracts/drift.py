@@ -4,9 +4,9 @@ The decision is not an internal value. It is written to GCS as drift/latest.json
 back by the Cloud Workflows orchestrator, which branches the whole nightly DAG on
 ``drift_detected``, ``data_quality.data_quality_failed`` and ``score_drift_detected``. The
 workflow reads those with ``map.get(...)`` defaults, so a *missing* key is a defined state
-there — which is why the decision is serialised with ``exclude_none`` (ml_common.contracts.
-serde) and why the conditionally-computed sections below default to None rather than to an
-empty value that would read as "computed, and clear".
+there — which is why the decision is serialised with ``exclude_none`` (data_contracts.serde)
+and why the conditionally-computed sections below default to None rather than to an empty
+value that would read as "computed, and clear".
 """
 
 from datetime import datetime

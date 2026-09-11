@@ -80,12 +80,55 @@ visible error.
 **Scale to zero.** `min_instance_count = 0`. Cloud Run's always-free allowance is 180k
 vCPU-seconds a month; one instance pinned warm for a 730-hour month is roughly 2.6M, so
 `min_instances = 1` would leave the free tier by about 15×. The cost is a cold start on the
-first request of the day, which `startup_cpu_boost` absorbs. `max_instances = 3` caps a
-runaway.
+first request of the day, which `startup_cpu_boost` absorbs.
+
+`max_instances = 1` caps the other end. One instance serves this readership with room to
+spare, so a second one starting would be a symptom rather than a need — and three pinned for
+a month is roughly 7.8M vCPU-seconds, some 40× the free allowance. The ceiling is the whole
+compute bill.
 
 `cpu_idle = false` is not negotiable in the other direction: Streamlit serves each session
 over a long-lived WebSocket from a per-process cache, so throttling CPU between requests would
 stall the session.
+
+---
+
+## The abuse surface
+
+Worth being explicit about, because the shape of this component's defences is unusual: the
+part that looks alarming is fine, and the parts that matter are not where you would look.
+
+**An anonymous flood never reaches this infrastructure.** IAP terminates unauthenticated
+requests at Google's edge, so no container starts, no vCPU-second is billed and no query
+runs. `ingress = "INGRESS_TRAFFIC_ALL"` does not change that — it is what the direct
+integration requires, and the authorisation boundary is the IAM binding behind it. A request
+that somehow got past IAP would still need `roles/run.invoker`, which only IAP's service
+agent holds. Volumetric L3/L4 and TLS-level traffic is absorbed by Google's frontend, which
+is not this project's bill.
+
+**So the exposure is authenticated, not anonymous.** Everything below assumes a principal in
+`dashboard_viewers` — a compromised account, or simply someone leaving many tabs open.
+
+| Vector | What bounds it |
+|---|---|
+| Exhausting the instance with sessions | `max_instance_request_concurrency = 20`. Reader 21 gets a 429 rather than an OOM that would drop all twenty live sessions and discard the cache. |
+| Driving up compute | `max_instances = 1`, `min_instances = 0`, `cpu_idle = false` only while an instance exists. |
+| Driving up BigQuery spend | `MAX_BYTES_BILLED` per query, plus the 30-minute cache. The cache is per *process*, so it dies on every scale-to-zero — forcing cold starts is the cheapest way to force queries. |
+| Anything that gets past all of the above | The project budget alert (see [iac.md](iac.md#budget-alerting-billing_budget-module)). |
+
+The BigQuery line is the asymmetric one. `MAX_BYTES_BILLED` at 2 GiB against a 1 TiB monthly
+free allowance means ~512 queries at the ceiling exhausts the month, and nothing bounds the
+*number* of queries. Today's views scan single-digit MB, so the real distance is enormous —
+but the ceiling was sized to catch a rewritten view, not to bound spend under sustained
+abuse, and those are different jobs. The budget alert is what covers the gap.
+
+**There is no Cloud Armor here, and there cannot be.** Rate limiting, adaptive protection and
+per-principal throttling all attach to a load balancer, and the no-load-balancer topology is
+the entire reason this component's auth is free. That trade is worth making at this scale —
+it costs one rate-limiting layer and buys the whole IAP integration — but it does mean
+`max_instances` and `max_instance_request_concurrency` are the *only* rate controls, and both
+are blunt. Reaching for Cloud Armor means adopting the LB topology, with its cost and its
+known WebSocket problems.
 
 ---
 
@@ -164,6 +207,15 @@ If the direct integration ever does break the upgrade, the fallback is Streamlit
 (`st.login()`) on a service whose invoker binding is public — same user experience, auth moves
 from the edge into the app, at the cost of an OAuth client and a Secret Manager secret.
 
+**That fallback is not a drop-in swap, and neither is disabling IAP.** Both `enableXsrfProtection`
+and `enableCORS` are off *because* nothing can reach the container except IAP. Make the invoker
+binding public — which the `st.login()` route requires by definition, and which setting
+`iap_enabled = false` does in effect the moment any other invoker is granted — and the container
+becomes directly reachable with its CSRF protection disabled, while `X-Goog-Authenticated-User-Email`
+becomes a header any caller can set. Re-enable both flags and put the container behind a real
+origin before taking either path. The two settings are a single coupled invariant with the IAM
+binding, not independent knobs.
+
 ---
 
 ## The two views
@@ -205,7 +257,7 @@ The two frames are checked differently, on purpose:
 * **`churn_risk_current` is checked by column.** A per-row pass would re-walk the whole scored
   base on every cache refresh to re-verify guarantees that already hold: a BigQuery view fixes
   each column's type for every row at once, and `churn_probability` was already bounded to
-  [0, 1] by `ml_common.contracts.ChurnPrediction` in the serving container before it reached
+  [0, 1] by `data_contracts.ChurnPrediction` in the serving container before it reached
   `ml.predictions`. What can change between deploys is the *set* of columns.
 * **`churn_risk_daily` is checked row by row.** It is one row per scored day — bounded by
   `ml.predictions`' retention, not by the customer base — so a full pass is free. It is also
@@ -219,11 +271,18 @@ column and `pd.NA` in a nullable-extension one. `NaN` is the dangerous one — i
 would be reported as *out of range* rather than as absent. Every optional field normalises all
 three spellings to `None` before validation.
 
-This app deliberately does **not** import `ml-common` for these models — it never loads a model
-or scores anything, and the dependency would drag xgboost and scikit-learn into an image that
-renders charts. The overlap is two column names, and `tests/test_schema.py` asserts the
-contract against the mart SQL directly, the same reconciliation-by-test approach the high-risk
-threshold already uses below.
+The two *model-output* column names are not redeclared here. `CHURN_PROBABILITY_FIELD` and
+`CHURN_PREDICTION_FIELD` are imported from `data_contracts` — the same pure-pydantic package
+the serving container uses to *write* those values — so the two ends of that path cannot
+drift apart. That package exists precisely so this is possible: it depends on `pydantic` and
+nothing else, where reaching the same names through `ml-common` would pull xgboost and
+scikit-learn into an image that renders charts. `uv tree --package dashboard` carries zero ML
+libraries, and a test asserts the names against `ChurnPrediction`'s own fields.
+
+The mart *row shapes* stay local, because they describe views owned by dbt and read by nothing
+else — a contract earns a place in the shared package by having more than one Python consumer.
+`tests/test_schema.py` reconciles them against the mart SQL directly, the same
+reconciliation-by-test approach the high-risk threshold already uses below.
 
 ---
 

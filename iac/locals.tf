@@ -13,6 +13,17 @@ locals {
 
   all_datasets = local.bigquery.datasets
 
+  # Read off the project rather than asked for. Every project that can run this platform is
+  # already attached to a billing account — that attachment is what makes BigQuery and Cloud
+  # Run billable in the first place — so requiring the id as input would be asking for a
+  # value Terraform can already see. var.billing_account_id stays as an override for the
+  # case where the budget belongs on a different account than the one the project bills to.
+  # Empty only if the project has no billing account at all, which also means nothing here
+  # can run; the budget module is skipped in that case rather than failing the apply.
+  billing_account_id = (
+    var.billing_account_id != "" ? var.billing_account_id : data.google_project.this.billing_account
+  )
+
   # Flatten nested datasets.tables into a single map keyed by "dataset_id.table_id"
   all_tables = merge([
     for dataset_id, dataset in local.all_datasets : {

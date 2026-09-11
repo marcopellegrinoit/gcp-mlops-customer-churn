@@ -15,7 +15,7 @@ import argparse
 import json
 import pathlib
 
-from ml_common.contracts import (
+from data_contracts import (
     EvaluationMetrics,
     PromotionDecision,
     RegistrationResult,

@@ -11,3 +11,7 @@ apis:
   - aiplatform.googleapis.com
   - datalineage.googleapis.com
   - iap.googleapis.com
+  # Budget alerting: billingbudgets creates the budget, monitoring holds the email
+  # notification channels it delivers through.
+  - billingbudgets.googleapis.com
+  - monitoring.googleapis.com

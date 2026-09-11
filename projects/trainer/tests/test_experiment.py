@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from ml_common.contracts import CHURN_PROBABILITY_FIELD
+from data_contracts import CHURN_PROBABILITY_FIELD
 from ml_common.drift import compute_baseline_stats, compute_psi
 
 

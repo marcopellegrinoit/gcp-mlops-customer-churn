@@ -8,11 +8,12 @@ the view. Without that, the same change surfaces as a `KeyError` several frames 
 an Altair encoding, or worse, as an indicator panel that silently stops listing a driver
 (`risk.cohort_reference` and `customer_indicators` both skip columns that are absent).
 
-Deliberately not shared with `ml_common.contracts`: this app never loads a model or scores
-anything, and depending on `ml-common` would drag xgboost and scikit-learn into an image
-that renders charts. The overlap is two column names, and `test_schema.py` asserts them
-against the mart SQL directly — the same reconciliation-by-test approach
-`risk.HIGH_RISK_FLOOR_IN_SQL` already uses, which is checkable in a way a comment is not.
+The model-output columns are not redeclared here: `CHURN_PROBABILITY_FIELD` and
+`CHURN_PREDICTION_FIELD` come from `data_contracts`, the same pure-pydantic package the
+serving container uses to *write* them, so the two cannot drift apart. The mart row shapes
+themselves stay local — they describe views owned by dbt and read by nothing else, and
+`test_schema.py` asserts them against the mart SQL directly, the same reconciliation-by-test
+approach `risk.HIGH_RISK_FLOOR_IN_SQL` uses for the band threshold.
 """
 
 from __future__ import annotations
@@ -21,7 +22,18 @@ from datetime import date
 from typing import Annotated, Any, TypeVar
 
 import pandas as pd
+from data_contracts import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, TypeAdapter, ValidationError
+
+__all__ = [
+    "CHURN_PREDICTION_FIELD",
+    "CHURN_PROBABILITY_FIELD",
+    "ChurnRiskDailyRow",
+    "ChurnRiskRow",
+    "MartContractError",
+    "require_columns",
+    "validate_trend",
+]
 
 
 class MartContractError(RuntimeError):
@@ -63,8 +75,9 @@ class ChurnRiskRow(BaseModel):
 
     # --- Identity and model output -------------------------------------------------------
     customer_id: str
-    # Mirrors ml_common.contracts.predictions.ChurnPrediction, which is what wrote this value
-    # into ml.predictions. Bounded for the same reason it is bounded there.
+    # The serving container writes this as data_contracts.ChurnPrediction.churn_probability;
+    # a test pins the name below to that model's own field so the two cannot drift. Bounded
+    # here for the same reason it is bounded there.
     churn_probability: float = Field(ge=0.0, le=1.0)
     model_version: str
     snapshot_date: date

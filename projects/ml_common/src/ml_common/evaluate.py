@@ -1,6 +1,7 @@
 """Champion/challenger evaluation gate: pure metrics, no GCP dependencies."""
 
 import numpy as np
+from data_contracts import EvaluationMetrics, ModelMetrics, PromotionDecision
 from sklearn.metrics import (
     average_precision_score,
     f1_score,
@@ -9,7 +10,6 @@ from sklearn.metrics import (
 )
 
 from ml_common.config import MLSettings, get_settings
-from ml_common.contracts import EvaluationMetrics, ModelMetrics, PromotionDecision
 
 
 def compute_full_metrics(

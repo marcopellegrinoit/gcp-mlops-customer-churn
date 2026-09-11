@@ -2,7 +2,7 @@
 
 import logging
 
-from ml_common.contracts import ModelMetrics, RegistrationResult
+from data_contracts import ModelMetrics, RegistrationResult
 from post_training.notify import notify
 
 

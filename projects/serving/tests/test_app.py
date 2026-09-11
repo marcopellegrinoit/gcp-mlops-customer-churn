@@ -3,8 +3,8 @@
 import pandas as pd
 import pytest
 import xgboost as xgb
+from data_contracts import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
 from fastapi.testclient import TestClient
-from ml_common.contracts import CHURN_PREDICTION_FIELD, CHURN_PROBABILITY_FIELD
 
 
 @pytest.fixture()

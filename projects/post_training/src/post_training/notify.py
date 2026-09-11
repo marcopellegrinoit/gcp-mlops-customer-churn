@@ -11,8 +11,8 @@ consumer is ever added.
 
 import logging
 
+from data_contracts import RegistrationResult, to_json
 from ml_common.config import get_settings
-from ml_common.contracts import RegistrationResult, to_json
 
 
 def notify(message: RegistrationResult) -> None:

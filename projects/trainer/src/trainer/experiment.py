@@ -8,9 +8,9 @@ import modeling.hpo as ml_hpo
 import modeling.train as ml_train
 import pandas as pd
 import xgboost as xgb
+from data_contracts import CHURN_PROBABILITY_FIELD, ModelMetadata, SplitRef, to_json
 from google.cloud import aiplatform, storage
 from ml_common.config import get_settings as get_ml_settings
-from ml_common.contracts import CHURN_PROBABILITY_FIELD, ModelMetadata, SplitRef, to_json
 from ml_common.drift import compute_baseline_stats
 from ml_common.preprocess import categorical_categories, prepare_features
 from modeling.config import get_settings as get_modeling_settings
@@ -148,7 +148,7 @@ def _upload_artifacts(model: xgb.XGBClassifier, metadata: ModelMetadata, artifac
     instead of re-deriving it from whatever a given batch happens to contain (see
     ml_common.preprocess.select_inference_features).
 
-    Written through ml_common.contracts.to_json rather than the model's own JSON serialiser
+    Written through data_contracts.to_json rather than the model's own JSON serialiser
     — baseline bin edges are bounded by ±inf, which pydantic would write as null. See that
     function for the full reasoning.
     """
