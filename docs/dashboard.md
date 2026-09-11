@@ -37,6 +37,13 @@ flowchart LR
 | Churn-rate trend | Whether the at-risk population is growing or shrinking |
 | Retention worklist | Which specific customers to contact, ranked, filterable, searchable |
 | Indicator panel | What makes one selected customer unusual relative to the cohort |
+| Header | When the snapshot was scored, who is signed in, and which champion produced it |
+
+The champion in the header is a link. `ml.predictions` stores the model as its full Vertex AI
+resource name, so `app.model_registry_url` turns that into the model's Model Registry console
+page (`.../versions/default` when the resource name carries no `@version`, matching what the
+Vertex AI SDK does for its own links). The column is free text, so an unparseable value falls
+back to plain unlinked text rather than a link into a console error page.
 
 ### Three things it deliberately does not do
 

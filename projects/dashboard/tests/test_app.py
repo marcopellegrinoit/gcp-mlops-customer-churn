@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 import streamlit as st
+from dashboard.app import model_registry_url
 from streamlit.testing.v1 import AppTest
 
 SCRIPT = find_spec("dashboard.app").origin
@@ -128,3 +129,38 @@ def test_the_page_never_shows_the_observed_churn_label(snapshot):
 
     columns = harness.dataframe[0].value.columns
     assert "churned" not in columns
+
+
+def test_the_model_name_links_to_its_model_registry_entry(snapshot):
+    """A resource name without @version points at the console's "default" version segment."""
+    harness = _run(snapshot, _trend())
+    captions = [caption.value for caption in harness.caption]
+    expected = (
+        "Model: [`churn-predictor`](https://console.cloud.google.com/vertex-ai/models"
+        "/locations/eu/models/churn-predictor/versions/default?project=p)"
+    )
+
+    assert expected in captions, captions
+
+
+def test_a_versioned_resource_name_links_to_that_version():
+    url = model_registry_url("projects/p/locations/europe-west1/models/456@3")
+    assert url == (
+        "https://console.cloud.google.com/vertex-ai/models/locations/europe-west1"
+        "/models/456/versions/3?project=p"
+    )
+
+
+@pytest.mark.parametrize(
+    "value", ["", "churn-predictor", "projects/p/models/456", "projects/p/locations/eu/models/"]
+)
+def test_a_value_that_is_not_a_resource_name_is_not_linked(value):
+    """The mart column is free text; an unparseable value must not become a broken link."""
+    assert model_registry_url(value) is None
+
+
+def test_an_unlinkable_model_version_still_renders_its_name(snapshot):
+    harness = _run(snapshot.assign(model_version="hand-written-v2"), _trend())
+
+    assert not harness.exception
+    assert "Model: `hand-written-v2`" in [caption.value for caption in harness.caption]

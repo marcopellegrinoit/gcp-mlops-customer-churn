@@ -19,6 +19,8 @@ that in-memory frame, so no interaction on this page costs a BigQuery query.
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 import streamlit as st
 
@@ -53,6 +55,35 @@ def _trend() -> pd.DataFrame:
     return fetch_risk_trend(_client(), settings)
 
 
+# Vertex AI writes the champion into ml.predictions as its full resource name —
+# projects/{project}/locations/{region}/models/{id}, optionally suffixed with @{version}
+# (post_training.register logs Model.resource_name). The console keys its Model Registry page
+# on the last three of those, and on the literal version segment "default" when the resource
+# name carries no @version — the same mapping the Vertex AI SDK uses for its own "View Model"
+# links (google/cloud/aiplatform/utils/_ipython_utils.py).
+_MODEL_RESOURCE = re.compile(
+    r"^projects/(?P<project>[^/]+)/locations/(?P<location>[^/]+)"
+    r"/models/(?P<model>[^/@]+)(?:@(?P<version>[^/@]+))?$"
+)
+
+
+def model_registry_url(resource_name: str) -> str | None:
+    """Return the Model Registry console URL for a Vertex AI model resource name.
+
+    None when the value is not one. `model_version` is a free-text mart column, so a
+    hand-written or legacy value has to degrade to unlinked text rather than to a link that
+    lands the reader on a console error page.
+    """
+    match = _MODEL_RESOURCE.match(resource_name.strip())
+    if match is None:
+        return None
+    return (
+        "https://console.cloud.google.com/vertex-ai/models/locations/"
+        f"{match['location']}/models/{match['model']}"
+        f"/versions/{match['version'] or 'default'}?project={match['project']}"
+    )
+
+
 def _active_palette() -> dict:
     """Return the validated palette matching the viewer's light/dark preference."""
     theme = getattr(getattr(st, "context", None), "theme", None)
@@ -71,7 +102,16 @@ def _header(snapshot: pd.DataFrame) -> None:
     with right:
         email = viewer_email(dict(st.context.headers)) if hasattr(st, "context") else None
         st.caption(f"Signed in as **{email}**" if email else "Signed in as an unauthenticated user")
-        st.caption(f"Model: `{snapshot['model_version'].iloc[0].split('/')[-1]}`")
+        # Linked to the Model Registry entry that produced these scores, so "which model
+        # is this?" is one click rather than a hunt through the console.
+        resource_name = str(snapshot["model_version"].iloc[0])
+        display_name = resource_name.split("/")[-1]
+        console_url = model_registry_url(resource_name)
+        st.caption(
+            f"Model: [`{display_name}`]({console_url})"
+            if console_url
+            else f"Model: `{display_name}`"
+        )
 
     # Staleness is stated, not implied. The pipeline scores nightly, so anything past a day
     # means the run did not land and the numbers below describe a base that has since moved.
