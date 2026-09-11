@@ -138,11 +138,42 @@ def _get_rejection_count(state_uri: str) -> int:
 
 
 def _demote_previous_champion(exclude: str, model_display_name: str) -> None:
-    """Set role=retired on every champion version except the newly registered one."""
+    """Set role=retired on every champion version except the newly registered one.
+
+    The update must target the **version-qualified** resource (``models/<id>@<version>``).
+    Model.list() yields unversioned resource names, and a labels update sent to an
+    unversioned name does not behave like a field-mask write: new keys are merged in, but an
+    existing key's value is never changed and never removed. The request succeeds, echoes the
+    values you asked for, and bumps updateTime — while a subsequent read still returns the
+    old value. Verified against the live API: a PATCH of role=retired on models/<id> echoed
+    "retired" and read back "champion" indefinitely, and the same PATCH on models/<id>@1 took
+    effect immediately.
+
+    That is how two models ended up labelled role=champion at once. The promotion worked, the
+    demotion reported success, and nothing surfaced it — every consumer happens to sort by
+    create_time desc and take the first match, so the newest champion still won and the
+    broken invariant stayed invisible.
+
+    Hence the read-back: a silent no-op here is exactly the failure that has to be loud.
+    """
     for model in aiplatform.Model.list(filter=f'display_name="{model_display_name}"'):
         if model.resource_name == exclude:
             continue
         labels = dict(model.labels or {})
-        if labels.get("role") == "champion":
-            labels["role"] = "retired"
-            model.update(labels=labels)
+        if labels.get("role") != "champion":
+            continue
+
+        labels["role"] = "retired"
+        aiplatform.Model(model_name=f"{model.resource_name}@{model.version_id}").update(
+            labels=labels
+        )
+
+        still_champion = (aiplatform.Model(model_name=model.resource_name).labels or {}).get(
+            "role"
+        ) == "champion"
+        if still_champion:
+            raise RuntimeError(
+                f"Failed to demote previous champion {model.resource_name}: it still reads "
+                "role=champion after the update. Two models labelled champion breaks the "
+                "singleton every champion lookup depends on."
+            )
