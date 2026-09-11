@@ -1,14 +1,14 @@
 """Unit tests for the cross-container data contracts themselves."""
 
 import json
+import math
 
-import numpy as np
-import pandas as pd
 import pytest
 from data_contracts import (
     CHURN_PREDICTION_FIELD,
     CHURN_PROBABILITY_FIELD,
     BatchPredictionRecord,
+    CategoricalBaseline,
     ChurnPrediction,
     DriftDecision,
     ModelMetadata,
@@ -16,22 +16,39 @@ from data_contracts import (
     SplitRef,
     to_json,
 )
-from ml_common.drift import compute_baseline_stats
 from pydantic import ValidationError
 
 
 def _metadata() -> ModelMetadata:
-    rng = np.random.RandomState(4)
-    X = pd.DataFrame(
-        {
-            "avg_transaction_30d": rng.normal(50, 10, 500),
-            "membership_tier": rng.choice(["friend", "champion"], 500),
-        }
-    )
+    """A metadata artifact built from contract objects directly, not from ml_common.
+
+    Deliberately does not call compute_baseline_stats to produce the baselines. This package
+    is pydantic-and-nothing-else by design, and ml_common depends on *it* — importing
+    ml_common here inverts that and drags numpy, pandas and xgboost into the test
+    environment of the one package every image installs. It also made these tests unrunnable
+    in isolation: CI installs only this package's own dependencies, so the import failed
+    with ModuleNotFoundError while passing locally against the shared workspace venv.
+
+    What these tests own is whether the contracts serialise and validate correctly, which is
+    fully exercised by literal instances. That the *real* baselines come out with ±inf outer
+    edges is ml_common's behaviour and is covered by its own test_drift.py.
+    """
     return ModelMetadata(
-        feature_names=list(X.columns),
+        feature_names=["avg_transaction_30d", "membership_tier"],
         threshold=0.42,
-        baseline_stats=compute_baseline_stats(X),
+        baseline_stats={
+            "avg_transaction_30d": NumericBaseline(
+                bin_edges=[-math.inf, 42.0, 50.0, 58.0, math.inf],
+                expected_pct=[0.25, 0.25, 0.25, 0.25],
+                null_rate=0.0,
+                monitored=True,
+            ),
+            "membership_tier": CategoricalBaseline(
+                frequencies={"champion": 0.5, "friend": 0.5},
+                null_rate=0.0,
+                monitored=True,
+            ),
+        },
         shap_importance={"avg_transaction_30d": 0.7},
         categorical_categories={"membership_tier": ["champion", "friend"]},
         training_snapshot_date="2026-09-01",
@@ -56,10 +73,10 @@ def test_infinite_bin_edges_survive_serialisation():
     metadata = _metadata()
     spec = metadata.baseline_stats["avg_transaction_30d"]
     assert isinstance(spec, NumericBaseline)
-    assert spec.bin_edges[0] == -np.inf
+    assert spec.bin_edges[0] == -math.inf
 
     reloaded = ModelMetadata.model_validate_json(to_json(metadata))
-    assert reloaded.baseline_stats["avg_transaction_30d"].bin_edges[0] == -np.inf
+    assert reloaded.baseline_stats["avg_transaction_30d"].bin_edges[0] == -math.inf
 
 
 def test_absent_optional_fields_stay_absent_rather_than_null():
