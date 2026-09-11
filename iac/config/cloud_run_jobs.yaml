@@ -13,6 +13,10 @@ cloud_run_jobs:
     bq_dataset_roles:
       raw: "roles/bigquery.dataViewer"
       features: "roles/bigquery.dataEditor"
+      # churn_risk_current/churn_risk_daily are views over ml.predictions joined against
+      # customer_features, so dbt reads the ml dataset as well as writing features. Read-only:
+      # dbt owns nothing in ml — the orchestrator's MERGE is what populates predictions.
+      ml: "roles/bigquery.dataViewer"
     service_account_project_roles:
       - "roles/bigquery.jobUser"
 
