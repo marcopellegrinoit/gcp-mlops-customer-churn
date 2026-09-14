@@ -103,4 +103,7 @@ cloud_run_jobs:
       training-data: "roles/storage.objectViewer"
     service_account_project_roles:
       - "roles/bigquery.jobUser"
+      # Lets to_dataframe() open a BigQuery Storage read session instead of paging the
+      # feature snapshot and the champion's scores back over the REST endpoint.
+      - "roles/bigquery.readSessionUser"
       - "roles/aiplatform.user"
