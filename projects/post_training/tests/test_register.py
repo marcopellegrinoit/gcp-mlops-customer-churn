@@ -1,6 +1,7 @@
 """Unit tests for the register_or_reject stage (no GCP credentials required)."""
 
 import post_training.register as register_module
+import pytest
 from data_contracts import EvaluationMetrics, ModelMetrics, PromotionDecision
 from google.cloud import exceptions as gcs_exceptions
 from post_training.register import register_or_reject
@@ -9,15 +10,74 @@ from post_training.register import register_or_reject
 class _FakeModel:
     """Stands in for aiplatform.Model, whose `name` is the bare model ID, unprefixed."""
 
-    def __init__(self, name, labels=None, resource_name=None):
+    def __init__(self, name, labels=None, resource_name=None, version_id="1"):
         self.name = name
         self.resource_name = resource_name or f"projects/p/locations/europe-west1/models/{name}"
         self.labels = labels or {}
+        self.version_id = version_id
         self.updated_labels = None
 
     def update(self, labels):
-        self.labels = labels
-        self.updated_labels = labels
+        """The unversioned write path, as Model.list() objects expose it.
+
+        Merges new keys but leaves existing values alone — so a demotion that calls
+        model.update() directly, as the original code did, fails the tests below instead of
+        silently appearing to work.
+        """
+        merged = dict(labels)
+        merged.update(self.labels)
+        self.labels = merged
+        self.updated_labels = dict(labels)
+
+
+class _ModelRef:
+    """A handle on a model, reached either by its versioned or unversioned resource name.
+
+    Reproduces the Vertex AI behaviour that hid the dual-champion bug: a labels update sent
+    to an *unversioned* name merges new keys in but leaves an existing key's value alone,
+    while reporting success. Only the version-qualified name actually changes a value. A fake
+    that let either path write would make the regression test below pass against the very
+    code it is meant to catch.
+    """
+
+    def __init__(self, model, versioned):
+        self._model = model
+        self._versioned = versioned
+
+    @property
+    def labels(self):
+        return self._model.labels
+
+    def update(self, labels):
+        if self._versioned:
+            self._model.labels = dict(labels)
+        else:
+            merged = dict(labels)
+            merged.update(self._model.labels)  # existing values win, as the live API does
+            self._model.labels = merged
+        self._model.updated_labels = dict(labels)
+
+
+class _FakeModelApi:
+    """Stands in for the aiplatform.Model class: constructor lookup plus list/upload."""
+
+    def __init__(self, models, uploaded=None):
+        self._models = list(models)
+        self._uploaded = uploaded
+
+    def __call__(self, model_name):
+        for m in self._models:
+            if model_name == f"{m.resource_name}@{m.version_id}":
+                return _ModelRef(m, versioned=True)
+            if model_name == m.resource_name:
+                return _ModelRef(m, versioned=False)
+        raise LookupError(model_name)
+
+    def list(self, **kwargs):
+        return list(self._models)
+
+    def upload(self, **kwargs):
+        return self._uploaded
 
 
 _METRICS = EvaluationMetrics(
@@ -142,12 +202,9 @@ def test_promotion_demotes_previous_champion_but_leaves_other_roles_alone(monkey
     )
 
     monkeypatch.setattr(
-        register_module.aiplatform.Model, "upload", staticmethod(lambda **kwargs: new_model)
-    )
-    monkeypatch.setattr(
-        register_module.aiplatform.Model,
-        "list",
-        staticmethod(lambda **kwargs: [old_champion, already_retired, rejected, new_model]),
+        register_module.aiplatform,
+        "Model",
+        _FakeModelApi([old_champion, already_retired, rejected, new_model], uploaded=new_model),
     )
     _patch_state(monkeypatch, current_count=0)
 
@@ -157,6 +214,71 @@ def test_promotion_demotes_previous_champion_but_leaves_other_roles_alone(monkey
     assert already_retired.updated_labels is None
     assert rejected.updated_labels is None
     assert new_model.labels["role"] == "champion"  # excluded from demotion by resource_name
+
+
+def test_demotion_targets_the_version_qualified_resource(monkeypatch):
+    # The dual-champion bug: Model.list() yields unversioned names, and a labels update sent
+    # to an unversioned name cannot change an existing key's value even though it reports
+    # success. Demoting via models/<id> alone leaves two models labelled role=champion.
+    _patch_experiment_logging(monkeypatch)
+    new_model = _FakeModel(
+        name="new",
+        labels={"role": "champion"},
+        resource_name="projects/p/locations/europe-west1/models/456",
+    )
+    old_champion = _FakeModel(
+        name="old",
+        labels={"role": "champion"},
+        resource_name="projects/p/locations/europe-west1/models/123",
+        version_id="3",
+    )
+    monkeypatch.setattr(
+        register_module.aiplatform,
+        "Model",
+        _FakeModelApi([old_champion, new_model], uploaded=new_model),
+    )
+    _patch_state(monkeypatch, current_count=0)
+
+    register_or_reject(**_base_kwargs(decision=PromotionDecision(promote=True)))
+
+    # Exactly one champion remains, which is the whole point of the invariant.
+    assert old_champion.labels["role"] == "retired"
+    assert new_model.labels["role"] == "champion"
+
+
+def test_demotion_that_silently_no_ops_raises(monkeypatch):
+    # The original failure was silent: the update succeeded, updateTime moved, and the label
+    # did not change. Nothing downstream noticed because every champion lookup sorts by
+    # create_time desc and takes the first match, so the newest model still won.
+    _patch_experiment_logging(monkeypatch)
+    new_model = _FakeModel(
+        name="new",
+        labels={"role": "champion"},
+        resource_name="projects/p/locations/europe-west1/models/456",
+    )
+    stubborn = _FakeModel(
+        name="old",
+        labels={"role": "champion"},
+        resource_name="projects/p/locations/europe-west1/models/123",
+    )
+
+    class _NeverWrites(_FakeModelApi):
+        """A registry whose writes never take effect, versioned or not."""
+
+        def __call__(self, model_name):
+            ref = super().__call__(model_name)
+            ref._versioned = False
+            return ref
+
+    monkeypatch.setattr(
+        register_module.aiplatform,
+        "Model",
+        _NeverWrites([stubborn, new_model], uploaded=new_model),
+    )
+    _patch_state(monkeypatch, current_count=0)
+
+    with pytest.raises(RuntimeError, match="Failed to demote previous champion"):
+        register_or_reject(**_base_kwargs(decision=PromotionDecision(promote=True)))
 
 
 # ---------------------------------------------------------------------------
