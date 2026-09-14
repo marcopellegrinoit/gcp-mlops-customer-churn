@@ -45,11 +45,11 @@ datasets:
           - name: total_payment_attempts
             type: INT64
             mode: NULLABLE
-            description: "Total payment attempts summed across all events."
+            description: "Payment attempts summed over the trailing activity window (dbt var activity_window_days, 90d). Windowed rather than lifetime: a lifetime sum over an append-only CDC log encodes the dataset's age and drifts against any frozen baseline forever."
           - name: days_since_last_successful_payment
             type: INT64
             mode: NULLABLE
-            description: "Days since the most recent successful payment; 9999 when none on record."
+            description: "Calendar days from the most recent successful payment to snapshot_date, capped at the dbt var payment_recency_cap_days (30). NULL when there is no successful payment on record — informative rather than missing (it identifies customers who have never paid successfully), and no sentinel value is emitted."
           - name: avg_engagement_30d
             type: FLOAT64
             mode: NULLABLE
@@ -69,7 +69,7 @@ datasets:
           - name: total_events
             type: INT64
             mode: NULLABLE
-            description: "Total number of CDC events for the customer."
+            description: "CDC events for the customer across the retained source history (raw.activity_cdc keeps 90 days of partitions)."
           - name: events_last_30d
             type: INT64
             mode: NULLABLE
@@ -81,7 +81,7 @@ datasets:
           - name: renewal_count
             type: INT64
             mode: NULLABLE
-            description: "Total number of membership renewal events."
+            description: "Membership renewal events within the trailing activity window (dbt var activity_window_days, 90d), for the same reason total_payment_attempts is windowed."
           - name: latest_event_ts
             type: TIMESTAMP
             mode: NULLABLE
@@ -185,11 +185,11 @@ datasets:
           - name: total_payment_attempts
             type: INT64
             mode: NULLABLE
-            description: "Total payment attempts summed across all events."
+            description: "Payment attempts summed over the trailing activity window (dbt var activity_window_days, 90d). Windowed rather than lifetime: a lifetime sum over an append-only CDC log encodes the dataset's age and drifts against any frozen baseline forever."
           - name: days_since_last_successful_payment
             type: INT64
             mode: NULLABLE
-            description: "Days since the most recent successful payment; 9999 when none on record."
+            description: "Calendar days from the most recent successful payment to snapshot_date, capped at the dbt var payment_recency_cap_days (30). NULL when there is no successful payment on record — informative rather than missing (it identifies customers who have never paid successfully), and no sentinel value is emitted."
           - name: avg_engagement_30d
             type: FLOAT64
             mode: NULLABLE
@@ -209,7 +209,7 @@ datasets:
           - name: total_events
             type: INT64
             mode: NULLABLE
-            description: "Total number of CDC events for the customer."
+            description: "CDC events for the customer across the retained source history (raw.activity_cdc keeps 90 days of partitions)."
           - name: events_last_30d
             type: INT64
             mode: NULLABLE
@@ -221,7 +221,7 @@ datasets:
           - name: renewal_count
             type: INT64
             mode: NULLABLE
-            description: "Total number of membership renewal events."
+            description: "Membership renewal events within the trailing activity window (dbt var activity_window_days, 90d), for the same reason total_payment_attempts is windowed."
           - name: churned
             type: BOOL
             mode: REQUIRED

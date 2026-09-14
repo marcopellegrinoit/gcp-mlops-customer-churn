@@ -4,9 +4,20 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "GCP provider region."
+  description = <<-EOT
+    GCP region every resource is created in, and the BigQuery datasets' location.
+
+    The default must match the region the rest of the repo hardcodes, because several
+    deployment paths cannot read this variable and assume it: the _REGION substitution in
+    every .cloudbuild/*.yaml (whose `gcloud run jobs update` targets a job by region), the
+    REGION env var on the drift-monitor job, BQ_LOCATION on the dbt job and the dashboard,
+    and the region parameter the training pipeline is compiled with. Left at the provider's
+    conventional us-central1, an apply that forgets to set this in terraform.tfvars builds
+    the whole platform in one region while CI deploys revisions into another — and the
+    symptom is a deploy step failing to find a job that was created successfully.
+  EOT
   type        = string
-  default     = "us-central1"
+  default     = "europe-west1"
 }
 
 variable "alert_email" {
