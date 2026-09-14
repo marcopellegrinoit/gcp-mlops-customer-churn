@@ -105,7 +105,13 @@ def compute_metrics(y_true: np.ndarray, proba: np.ndarray, threshold: float) -> 
 
 
 def select_threshold(y_true: np.ndarray, proba: np.ndarray, target_recall: float) -> float:
-    """Select the lowest threshold achieving target_recall; break ties by highest precision.
+    """Select the highest-precision threshold that still achieves target_recall.
+
+    Recall falls as the threshold rises, so the candidates clearing target_recall are a
+    prefix of the curve and the most precise of them is the *largest* threshold in it — the
+    strictest operating point that still catches the required share of churners. (This
+    docstring used to say "lowest threshold", which is the opposite of both the code and the
+    intent: the lowest threshold clearing any recall target is the one that flags everybody.)
 
     Falls back to the threshold that maximises recall when no candidate meets the target.
     Public so it can be unit-tested independently.
@@ -122,17 +128,37 @@ def select_threshold(y_true: np.ndarray, proba: np.ndarray, target_recall: float
 
 
 def _spearman_rank_correlation(current: dict, baseline: dict | None) -> float | None:
-    """Compute Spearman rank correlation between two SHAP importance dicts."""
+    """Compute Spearman rank correlation between two SHAP importance dicts.
+
+    Ties are real here and have to be handled, not assumed away: XGBoost gives a feature it
+    never split on a mean |SHAP| of exactly 0.0, so a model with unused features carries a
+    block of exact ties — and the two models being compared rarely leave the *same* features
+    unused. Hence average ranks (``_average_ranks``) rather than ordinal position, and
+    Pearson over those ranks rather than the ``1 - 6*d²/(n(n²-1))`` shortcut, which is only
+    equal to Spearman when no value is tied.
+
+    None when either side is constant across the shared features: every rank is then the
+    same, the correlation is 0/0, and reporting any number for it would be an invention.
+    """
     if baseline is None or len(current) < 2:
         return None
     features = sorted(set(current) & set(baseline))
     if len(features) < 2:
         return None
-    c = np.array([current[f] for f in features], dtype=float)
-    b = np.array([baseline[f] for f in features], dtype=float)
-    # Rank both vectors (average method for ties)
-    cr = np.argsort(np.argsort(c)).astype(float)
-    br = np.argsort(np.argsort(b)).astype(float)
-    n = len(features)
-    d2 = np.sum((cr - br) ** 2)
-    return float(1.0 - 6.0 * d2 / (n * (n**2 - 1)))
+    cr = _average_ranks(np.array([current[f] for f in features], dtype=float))
+    br = _average_ranks(np.array([baseline[f] for f in features], dtype=float))
+    if cr.std() == 0.0 or br.std() == 0.0:
+        return None
+    return float(np.corrcoef(cr, br)[0, 1])
+
+
+def _average_ranks(values: np.ndarray) -> np.ndarray:
+    """Rank ``values`` ascending from 1, giving every tied group its group's mean rank."""
+    order = np.argsort(values, kind="stable")
+    ranks = np.empty(len(values), dtype=float)
+    ranks[order] = np.arange(1, len(values) + 1, dtype=float)
+    # Collapse each run of equal values onto the mean of the ordinal ranks it was handed.
+    for value in np.unique(values):
+        tied = values == value
+        ranks[tied] = ranks[tied].mean()
+    return ranks

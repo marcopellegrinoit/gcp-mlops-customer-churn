@@ -147,3 +147,38 @@ def test_the_gate_is_deployment_policy():
     metrics = _metrics(0.73, 0.62)
     assert decide(metrics).promote is True
     assert decide(metrics, MLSettings(pr_auc_min_delta=0.10)).promote is False
+
+
+def test_spearman_averages_tied_ranks_rather_than_ordering_them_arbitrarily():
+    """Unused features tie at exactly 0.0, and the two models rarely leave the same ones out.
+
+    Ordinal ranking breaks such a tie by dict order, which invents a disagreement between
+    two rankings that are in fact identical wherever they are defined.
+    """
+    # b ties f2/f3 at 0.0; a ranks them apart. Nothing else differs.
+    a = {"f1": 5.0, "f2": 1.0, "f3": 2.0, "f4": 9.0}
+    b = {"f1": 5.0, "f2": 0.0, "f3": 0.0, "f4": 9.0}
+
+    corr = _spearman_rank_correlation(a, b)
+    assert corr is not None
+    # f2/f3 share rank 1.5 on the b side, which is a genuine loss of resolution and pulls
+    # the correlation just below 1. Ordinal ranking instead broke the tie in dict order,
+    # happened to match a's ordering, and reported a perfect 1.0. Value verified against
+    # scipy.stats.spearmanr, which is the definition this now implements.
+    assert corr == pytest.approx(0.9486832980505138)
+
+
+def test_spearman_is_none_when_one_side_ranks_everything_equally():
+    """An all-zero importance vector has no ordering to correlate against."""
+    a = {"f1": 1.0, "f2": 2.0, "f3": 3.0}
+    b = {"f1": 0.0, "f2": 0.0, "f3": 0.0}
+    assert _spearman_rank_correlation(a, b) is None
+
+
+def test_spearman_matches_the_untied_shortcut_formula():
+    """With no ties, Pearson-over-ranks must agree with 1 - 6*d^2/(n(n^2-1))."""
+    a = {"f1": 10.0, "f2": 8.0, "f3": 6.0, "f4": 4.0, "f5": 2.0}
+    b = {"f1": 1.0, "f2": 5.0, "f3": 3.0, "f4": 9.0, "f5": 7.0}
+    # ranks: a = 5,4,3,2,1 ; b = 1,3,2,5,4  -> d = 4,1,1,-3,-3 -> d^2 sum = 36
+    expected = 1.0 - 6.0 * 36 / (5 * (25 - 1))
+    assert _spearman_rank_correlation(a, b) == pytest.approx(expected)
