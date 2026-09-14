@@ -11,6 +11,14 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
+# Staleness ceiling for days_since_last_successful_payment. The column is anchored to
+# CURRENT_DATE(), so uncapped it grows by 1 every day for any customer without a new
+# successful payment and drifts against a frozen baseline forever. Past this horizon
+# "stale" carries no further churn signal, so collapsing the tail costs nothing and
+# makes the feature stationary. Changing it changes feature semantics: retrain after.
+vars:
+  payment_recency_cap_days: 30
+
 models:
   dbt_transform:
     staging:

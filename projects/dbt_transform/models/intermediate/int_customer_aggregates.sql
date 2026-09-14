@@ -33,7 +33,17 @@ events_windowed AS (
 last_successful_payment AS (
     SELECT
         customer_id,
-        MIN(days_since_event) AS days_since_last_successful_payment
+        -- Capped at PAYMENT_RECENCY_CAP_DAYS. Uncapped, this column is a clock: it is
+        -- measured from CURRENT_DATE(), so every customer without a new successful payment
+        -- gains exactly 1 per day and the whole distribution translates right overnight.
+        -- Drift PSI compares it against a baseline frozen at training time, so the translation
+        -- reads as drift that retraining cannot fix — it re-breaches within two days of every
+        -- rebaseline (0.0001 the day the champion trained, 0.72/0.80/0.89 on the three days
+        -- after). The mass point is what does the damage: everyone whose last success predates
+        -- the CDC history piles up at the maximum, which is simply the dataset's age, and that
+        -- pile lands in a bin the baseline has never seen. Capping collapses that pile into one
+        -- stable bin so the feature stops moving once the history is older than the cap.
+        LEAST(MIN(days_since_event), {{ var('payment_recency_cap_days') }}) AS days_since_last_successful_payment
     FROM events_windowed
     WHERE payment_status = 'success'
     GROUP BY customer_id

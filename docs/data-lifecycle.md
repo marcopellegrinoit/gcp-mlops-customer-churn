@@ -169,13 +169,19 @@ They were previously anchored to each customer's own `MAX(event_timestamp)`, whi
 
 `days_since_last_successful_payment` showed the cost most plainly. Measured from the customer's own last event it was **0 for all 11,193 customers that had a value at all**, while true calendar staleness spanned 16 days; the column whose entire purpose is recency was a constant, which is also why the drift monitor reported it as carrying no usable signal. Anchored to the snapshot date it takes 14 distinct values across 0–16 days.
 
+Snapshot anchoring fixed the constant, but it introduced the opposite failure: the column became a **clock**. Measured from `CURRENT_DATE()`, every customer without a new successful payment gains exactly 1 per day, so the whole distribution translates right overnight. Drift PSI compares it against a baseline frozen at training time, which makes that translation read as drift — and retraining cannot fix a clock. Observed against the champion trained on `2026-09-11`: PSI **0.0001** the day the baseline was frozen, then **0.72 / 0.80 / 0.89** on the three days after, re-breaching the 0.20 threshold within two days of every rebaseline. Three retrains fired and all were rejected, each challenger landing within +0.005 PR-AUC of the champion.
+
+The mass point is what does the damage. Everyone whose last success predates the CDC history piles up at the maximum — which is simply the dataset's age, since `raw.activity_cdc` starts at `2026-08-22` — and that pile lands in a bin the frozen baseline has never seen. The champion's baseline held **12.8%** at `20`; three days later the same pile sat at `23`, and bin `20` was empty.
+
+`days_since_last_successful_payment` is therefore **capped** at the `payment_recency_cap_days` var (currently **30**, set in `dbt_project.yml`), which collapses that pile into one stable bin so the feature stops moving once the history is older than the cap. Past a month, "stale" carries no further churn signal, so the truncated tail costs nothing. Two consequences worth knowing: the cap only binds once the history exceeds it (from `2026-09-21`, given the `2026-08-22` start), so the mechanical drift continues until then; and changing the var changes feature semantics, so it requires a retrain to take effect. `member_since_days` is anchored the same way and will develop the identical problem as tenure accumulates — it is not capped yet.
+
 A consequence worth expecting: windows can now legitimately be empty. `events_last_30d = 0` and a `NULL` `avg_transaction_30d` mean "this customer did nothing in that window", which is information, not a defect. (It reads as 0 dormant customers today only because `raw.activity_cdc` holds ~16 days of events so far — nobody *can* be 30-day dormant until the history is older than the window.)
 
 | Feature group | Columns produced |
 |---|---|
 | **Transaction rolling averages** | `avg_transaction_30d`, `avg_transaction_90d` |
 | **Payment health** | `payment_failure_rate_30d`, `payment_failure_rate_90d` (failed / total events in window), `total_payment_attempts` |
-| **Payment recency** | `days_since_last_successful_payment` — days since last `payment_status = 'success'`; **NULL** when no successful payment exists (MNAR — see Customer Pool section) |
+| **Payment recency** | `days_since_last_successful_payment` — days since last `payment_status = 'success'`, capped at `payment_recency_cap_days` (30) to keep it stationary; **NULL** when no successful payment exists (MNAR — see Customer Pool section) |
 | **Engagement rolling averages** | `avg_engagement_30d`, `avg_engagement_90d` |
 | **Engagement behaviour** | `campaign_participation_rate` (fraction of events that are `campaign_action`), `preferred_channel` (mode via `APPROX_TOP_COUNT`) |
 | **Activity counts** | `total_events`, `events_last_30d`, `events_last_90d`, `renewal_count` |
@@ -204,7 +210,7 @@ Produces one row per customer by joining the rolling aggregates with the custome
 | `payment_failure_rate_30d` | FLOAT64 | Fraction of payments that failed in last 30 days |
 | `payment_failure_rate_90d` | FLOAT64 | Fraction of payments that failed in last 90 days |
 | `total_payment_attempts` | INT64 | Cumulative sum of `payment_attempts_last_30d` across all events |
-| `days_since_last_successful_payment` | INT64 \| NULL | Days since last success; NULL = no successful payment on record (MNAR) |
+| `days_since_last_successful_payment` | INT64 \| NULL | Days since last success, capped at 30; NULL = no successful payment on record (MNAR) |
 | `avg_engagement_30d` | FLOAT64 \| NULL | Average engagement score over last 30 days; NULL for offline-channel customers (MAR) |
 | `avg_engagement_90d` | FLOAT64 \| NULL | Average engagement score over last 90 days; NULL for offline-channel customers (MAR) |
 | `campaign_participation_rate` | FLOAT64 | Fraction of all events that are `campaign_action` |
