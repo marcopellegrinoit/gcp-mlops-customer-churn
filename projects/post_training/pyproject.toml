@@ -19,7 +19,7 @@ dependencies = [
     "google-cloud-aiplatform>=1.50.0,<2",
     "google-cloud-bigquery>=3.0.0,<4",
     "google-cloud-bigquery-storage>=2.0.0,<3",
-    "google-cloud-storage>=3.0.0,<4",
+    "google-cloud-storage>=3.14.1,<4",
 ]
 
 [project.optional-dependencies]
