@@ -55,7 +55,7 @@ def run_drift_check(settings: DriftMonitorSettings) -> DriftDecision:
 
     run_ts = pd.Timestamp.now(tz="UTC")
     _apply_persistence_rule(decision, champion.resource_name, settings)
-    _apply_data_quality_gate(decision, current, metadata, snapshot_date, settings)
+    _apply_data_quality_gate(decision, current, df.columns, metadata, snapshot_date, settings)
     _record_history(decision, settings.project_id, run_ts, snapshot_date, champion.resource_name)
 
     upload_decision(settings.decision_gcs_uri, decision)
@@ -65,6 +65,7 @@ def run_drift_check(settings: DriftMonitorSettings) -> DriftDecision:
 def _apply_data_quality_gate(
     decision: DriftDecision,
     current: pd.DataFrame,
+    snapshot_columns: pd.Index,
     metadata: ModelMetadata,
     snapshot_date: str,
     settings: DriftMonitorSettings,
@@ -81,6 +82,13 @@ def _apply_data_quality_gate(
     A failure to run the check is itself treated as a failure to clear it. This is the one
     place in this job that fails closed: every other degradation (missing history, a
     score-side error) biases toward not retraining anyway, and so does this one.
+
+    snapshot_columns is the feature table's *own* column set, passed separately because
+    `current` has already been reindexed onto the champion's frozen feature names — which
+    conjures every expected column into existence and left the missing-column assertion
+    structurally unable to fire. The mart dropping a column then read as that column having
+    gone 100% NULL, which is the right verdict reached through the wrong assertion and the
+    wrong alert text.
     """
     try:
         recent_row_counts, duplicate_key_count = fetch_quality_context(
@@ -90,7 +98,11 @@ def _apply_data_quality_gate(
             settings.quality_history_partitions,
         )
         quality = check_data_quality(
-            current, metadata.baseline_stats, recent_row_counts, duplicate_key_count
+            current,
+            metadata.baseline_stats,
+            recent_row_counts,
+            duplicate_key_count,
+            source_columns=snapshot_columns,
         )
     except Exception:
         log.exception("Data-quality check could not run; suppressing retraining for this run.")

@@ -106,9 +106,11 @@ Retraining on a defect bakes it into the model. The champion/challenger gate off
 |---|---|---|
 | `row_volume` | Snapshot is under 50% of the median of the last `QUALITY_HISTORY_PARTITIONS` (default 7) partitions | An incomplete upstream load — dbt writes the partition whether or not every source event arrived |
 | `duplicate_keys` | Any `customer_id` appears more than once | `stg_activity_cdc`'s event dedup or `customer_features`' `QUALIFY ROW_NUMBER()` stopped holding, so aggregates are computed over duplicated history |
-| `missing_columns` | A feature the champion trained on is absent | Schema change upstream |
+| `missing_columns` | A feature the champion trained on is absent from the feature table | Schema change upstream |
 | `null_rate` | A feature's null rate is more than 25 points above its training baseline | A broken join, distinguished from the genuine missingness shifts that PSI handles |
 | `collapsed_column` | A feature that varied at training now has one distinct value | An upstream default written into every row — the case where PSI is least reliable |
+
+`missing_columns` is asserted against the feature table's **own** column set, handed to `check_data_quality` as `source_columns`, not against the frame the other assertions read. That frame has already been through `select_inference_features`, which reindexes onto the champion's frozen feature names — so it materialises every expected column as all-NaN and the assertion could never fail on it. A dropped mart column was reported as a `null_rate` breach instead: the right verdict, reached by the wrong assertion, with an alert that pointed the reader at a broken join rather than at a schema change.
 
 A failure forces `drift_detected` to false, records `retrain_suppressed_by_data_quality`, and routes the orchestrator to `alert_data_quality_failure`, which names the failed assertions and states that retraining was withheld. The PSI numbers are still computed and written to `ml.drift_metrics` — they are useful evidence when diagnosing the defect.
 
@@ -171,7 +173,7 @@ When `orchestrator-workflow` reads `drift_detected = true` from the drift-monito
 
 ### Score Drift Detected (No Retraining)
 
-When feature drift is absent but `score_drift_detected = true` (the champion's `churn_probability` output has drifted from its training-time baseline — see [Prediction Score Drift](#prediction-score-drift-monitoring-only) above), `check_drift` routes to `alert_score_drift_only` instead of `trigger_training`. This calls the same `send_drift_alert` subworkflow with `pipeline_job: null` and no `suppressed_reason`, which branches its message to state the PSI value and threshold breached and that **no retraining was triggered automatically** — this is the only place a human finds out about score drift at all, since it's otherwise just a field in the GCS decision JSON and Cloud Run Job logs.
+When feature drift is absent but `score_drift_detected = true` (the champion's `churn_probability` output has drifted from its training-time baseline — see [Prediction Score Drift](#prediction-score-drift-monitoring-only) above), `check_drift` routes to `alert_score_drift_only` instead of `trigger_training`. This calls the same `send_drift_alert` subworkflow with `pipeline_job: null` and no `suppressed_reason`, which branches its message to state the PSI value and threshold breached and that **no retraining was triggered automatically** — this is the only place a human finds out about score drift at all, since it's otherwise just a field in the GCS decision JSON and Cloud Run Job logs. The threshold it quotes is `score_threshold`, the two-part bar the score check is actually judged against; it previously quoted `threshold`, the bare feature-PSI floor, which understates the bar whenever the sampling-noise floor is the binding half.
 
 ### Model Retrained & Promoted
 

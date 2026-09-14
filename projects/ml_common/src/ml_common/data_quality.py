@@ -21,7 +21,7 @@ are deployment policy rather than constants, and live in ml_common.config where 
 env var can move them without an image rebuild.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 import pandas as pd
 from data_contracts import (
@@ -41,6 +41,7 @@ def check_data_quality(
     recent_row_counts: list[int],
     duplicate_key_count: int,
     settings: MLSettings | None = None,
+    source_columns: Collection[str] | None = None,
 ) -> DataQualityReport:
     """Run every assertion against the live snapshot and return a pass/fail report.
 
@@ -48,6 +49,14 @@ def check_data_quality(
     (excluding this one); duplicate_key_count is how many customer_ids appear more than
     once in this snapshot. settings defaults to the process environment; pass one
     explicitly to assert against a specific tolerance rather than the deployed one.
+
+    source_columns is what the *source* actually returned, before any reindexing, and is
+    what the missing-column assertion is checked against. It exists because the only
+    production caller (drift_monitor.detect) hands this function a frame that has already
+    been through select_inference_features, which reindexes onto the champion's frozen
+    feature names — so every expected column is present by construction and the assertion
+    could never fail, however much the mart had dropped. Defaults to the frame's own
+    columns for callers holding the unreindexed snapshot.
     """
     settings = settings or get_settings()
     baseline = parse_baseline_stats(baseline_stats)
@@ -55,7 +64,11 @@ def check_data_quality(
 
     failures.extend(_check_row_volume(len(current), recent_row_counts, settings.min_row_ratio))
     failures.extend(_check_duplicate_keys(duplicate_key_count))
-    failures.extend(_check_expected_columns(current, baseline))
+    failures.extend(
+        _check_expected_columns(
+            current.columns if source_columns is None else source_columns, baseline
+        )
+    )
     failures.extend(_check_null_rates(current, baseline, settings.max_null_rate_increase))
     failures.extend(_check_collapsed_columns(current, baseline))
 
@@ -107,10 +120,10 @@ def _check_duplicate_keys(duplicate_key_count: int) -> list[QualityFailure]:
 
 
 def _check_expected_columns(
-    current: pd.DataFrame, baseline: dict[str, BaselineSpec]
+    source_columns: Collection[str], baseline: dict[str, BaselineSpec]
 ) -> list[QualityFailure]:
     """Every feature the champion was trained on has to be present to score against it."""
-    missing = sorted(_input_features(baseline) - set(current.columns))
+    missing = sorted(_input_features(baseline) - set(source_columns))
     if not missing:
         return []
     return [

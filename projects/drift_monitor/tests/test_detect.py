@@ -443,3 +443,41 @@ def test_data_quality_check_failure_fails_closed(monkeypatch):
 
     assert result.drift_detected is False
     assert result.data_quality.data_quality_failed is True
+
+
+def test_a_mart_that_stopped_emitting_a_feature_fails_the_missing_column_assertion(monkeypatch):
+    """The snapshot's own columns gate this, not the reindexed frame's.
+
+    run_drift_check reindexes the snapshot onto the champion's frozen feature names before
+    the quality gate sees it, which materialises every expected column as all-NaN. Judged on
+    that frame the missing-column assertion can never fail, and a dropped mart column was
+    only ever reported as a null-rate breach.
+    """
+    baseline_df = pd.DataFrame(
+        {
+            "avg_transaction_30d": np.random.RandomState(42).normal(50, 10, 500),
+            "renewal_count": np.random.RandomState(7).randint(0, 5, 500),
+        }
+    )
+    metadata = {
+        "feature_names": ["avg_transaction_30d", "renewal_count"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    # The mart no longer emits renewal_count at all.
+    snapshot_without_renewals = baseline_df.drop(columns=["renewal_count"])
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        snapshot_without_renewals,
+        fetch_predictions=lambda *a, **kw: None,
+        quality_context=lambda *a, **kw: ([500, 500], 0),
+    )
+
+    assert result.data_quality is not None
+    assert result.data_quality.data_quality_failed is True
+    failures = {failure.check: failure.detail for failure in result.data_quality.failures}
+    assert "missing_columns" in failures, failures
+    assert "renewal_count" in failures["missing_columns"]
+    # And the gate still does its job: a broken snapshot never triggers a retrain.
+    assert result.drift_detected is False

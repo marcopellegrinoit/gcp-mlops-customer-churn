@@ -145,3 +145,57 @@ def test_tolerances_come_from_settings(snapshot, baseline):
 
     strict = MLSettings(min_row_ratio=0.9)
     assert "row_volume" in _checks(check_data_quality(partial, baseline, [1000], 0, strict))
+
+
+def test_a_column_the_mart_dropped_is_reported_as_missing_not_as_null():
+    """The drift monitor hands this function a frame reindexed onto the frozen feature set.
+
+    Every expected column is present in that frame by construction, so the missing-column
+    assertion could never fire on it and a dropped mart column surfaced as "100% null"
+    instead. source_columns is the snapshot's own column set, which is what the assertion
+    has to be asked about.
+    """
+    baseline = {
+        "events_last_30d": {"type": "discrete", "frequencies": {"1.0": 1.0}, "null_rate": 0.0},
+        "avg_engagement_30d": {
+            "type": "numeric",
+            "bin_edges": [0.0, 1.0, 2.0],
+            "expected_pct": [0.5, 0.5],
+            "null_rate": 0.0,
+        },
+    }
+    # Reindexed frame: avg_engagement_30d exists but is entirely NaN, because the mart
+    # stopped emitting it.
+    reindexed = pd.DataFrame(
+        {"events_last_30d": [1.0, 1.0], "avg_engagement_30d": [float("nan")] * 2}
+    )
+
+    report = check_data_quality(
+        reindexed,
+        baseline,
+        recent_row_counts=[2, 2],
+        duplicate_key_count=0,
+        settings=MLSettings(),
+        source_columns=["events_last_30d"],
+    )
+
+    checks = {failure.check for failure in report.failures}
+    assert "missing_columns" in checks
+    detail = next(f.detail for f in report.failures if f.check == "missing_columns")
+    assert "avg_engagement_30d" in detail
+
+
+def test_the_missing_column_check_falls_back_to_the_frames_own_columns():
+    """Callers holding the unreindexed snapshot need not pass source_columns."""
+    baseline = {
+        "events_last_30d": {"type": "discrete", "frequencies": {"1.0": 1.0}, "null_rate": 0.0},
+        "gone": {"type": "discrete", "frequencies": {"1.0": 1.0}, "null_rate": 0.0},
+    }
+    report = check_data_quality(
+        pd.DataFrame({"events_last_30d": [1.0, 1.0]}),
+        baseline,
+        recent_row_counts=[2, 2],
+        duplicate_key_count=0,
+        settings=MLSettings(),
+    )
+    assert "missing_columns" in {failure.check for failure in report.failures}

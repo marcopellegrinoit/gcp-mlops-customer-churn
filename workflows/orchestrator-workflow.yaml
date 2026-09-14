@@ -1159,10 +1159,16 @@ send_drift_alert:
           - body_text: '${"PSI threshold breached for: " + json.encode_to_string(decision.breached_features) + ". No retraining was submitted: " + suppressed_reason + ". Drift that outlives a retrain usually means the challenger cannot beat the champion or the shift is upstream of the model — manual review recommended."}'
         next: send_email
 
+    # score_threshold, not threshold: the latter is the feature-PSI floor (the configured
+    # effect size), while the score check is judged against max(that floor, the bootstrapped
+    # sampling-noise floor for this batch's size). Quoting the wrong one understates the bar
+    # the breach actually cleared, which is the number the reader needs to size the alarm.
+    # Both keys are written together by drift_monitor.detect._add_score_drift, so reaching
+    # this branch (score_drift_detected true) guarantees score_threshold is present.
     - build_score_only_message:
         assign:
           - subject: "[MLOps Alert] Prediction score drift detected"
-          - body_text: '${"Champion prediction-score PSI=" + string(decision.score_psi) + " exceeds threshold " + string(decision.threshold) + ". Feature distributions are stable, so no retraining was triggered automatically — manual review recommended."}'
+          - body_text: '${"Champion prediction-score PSI=" + string(decision.score_psi) + " exceeds threshold " + string(decision.score_threshold) + ". Feature distributions are stable, so no retraining was triggered automatically — manual review recommended."}'
         next: send_email
 
     - send_email:
