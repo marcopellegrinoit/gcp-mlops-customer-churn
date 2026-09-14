@@ -164,3 +164,58 @@ def test_an_unlinkable_model_version_still_renders_its_name(snapshot):
 
     assert not harness.exception
     assert "Model: `hand-written-v2`" in [caption.value for caption in harness.caption]
+
+
+def _selected(snapshot: pd.DataFrame, trend: pd.DataFrame, row: int = 0) -> AppTest:
+    """Run the page with the worklist's Nth ranked row already selected."""
+    with (
+        patch("dashboard.data.fetch_risk_snapshot", return_value=snapshot),
+        patch("dashboard.data.fetch_risk_trend", return_value=trend),
+        patch("dashboard.data.build_client"),
+    ):
+        harness = AppTest.from_file(SCRIPT, default_timeout=60)
+        harness.session_state["worklist"] = {"selection": {"rows": [row], "columns": []}}
+        harness.run()
+    return harness
+
+
+def test_the_drilldown_can_report_every_driver_not_just_the_tabulated_ones():
+    """The worklist table shows ten columns; the indicator panel reads sixteen.
+
+    Handing the drill-down the narrowed display frame silently dropped the three drivers
+    the table does not have a column for — customer_indicators skips an absent column
+    rather than raising — so the panel could never name support contacts, activity events
+    or campaign participation however extreme the customer was on them.
+    """
+    fresh_date = pd.Timestamp.now("UTC").date()
+    cohort = pd.DataFrame(
+        {
+            "customer_id": [f"cust-{i:04d}" for i in range(10)],
+            # cust-0000 ranks first, and is the outlier on the three untabulated drivers.
+            "churn_probability": [0.99] + [0.10] * 9,
+            "churn_prediction": [True] + [False] * 9,
+            "model_version": ["projects/p/locations/eu/models/churn-predictor"] * 10,
+            "snapshot_date": [fresh_date] * 10,
+            "membership_tier": ["champion"] * 10,
+            "region": ["north"] * 10,
+            "preferred_channel": ["email"] * 10,
+            "member_since_days": [900] * 10,
+            "monthly_value": [180.0] * 10,
+            # Deliberately cohort-typical on everything the table does show, so an
+            # indicator can only come from a column the table omits.
+            "payment_failure_rate_30d": [0.2] * 10,
+            "days_since_last_successful_payment": [10.0] * 10,
+            "avg_engagement_30d": [50.0] * 10,
+            "contact_requests_last_30d": [20] + [2] * 9,
+            "events_last_30d": [1] + [40] * 9,
+            "campaign_participation_rate": [0.01] + [0.8] * 9,
+        }
+    )
+
+    harness = _selected(cohort, _trend())
+
+    assert not harness.exception
+    rendered = " ".join(block.value for block in harness.markdown)
+    assert "Support contacts (30d)" in rendered, rendered
+    assert "Activity events (30d)" in rendered, rendered
+    assert "Campaign participation" in rendered, rendered

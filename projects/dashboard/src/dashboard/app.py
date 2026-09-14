@@ -194,7 +194,15 @@ def _worklist(filtered: pd.DataFrame) -> None:
         "probability. Select a row to see what makes them stand out."
     )
 
-    display = filtered.sort_values("churn_probability", ascending=False)[
+    # Ranked once, then narrowed for display. The drill-down is handed `ranked`, not
+    # `display`: st.dataframe reports a selection as a positional index into the frame it
+    # was given, and the two share a row order, so the index maps either way — but only
+    # `ranked` still carries every driver column. Passing the narrowed frame silently
+    # dropped three of risk.DRIVERS (support contacts, activity events, campaign
+    # participation) from the indicator panel, because customer_indicators skips a driver
+    # that is absent from the row rather than raising on it.
+    ranked = filtered.sort_values("churn_probability", ascending=False)
+    display = ranked[
         [
             "customer_id",
             "risk_band",
@@ -238,18 +246,23 @@ def _worklist(filtered: pd.DataFrame) -> None:
         },
     )
 
-    _drilldown(display)
+    _drilldown(ranked)
 
 
-def _drilldown(display: pd.DataFrame) -> None:
-    """Render the indicator panel for the selected customer."""
+def _drilldown(ranked: pd.DataFrame) -> None:
+    """Render the indicator panel for the selected customer.
+
+    Takes the full ranked frame rather than the narrowed one the table displays: the
+    selection is a positional index, identical across both, and every risk.DRIVERS column
+    has to be on the row for customer_indicators to report it.
+    """
     selection = st.session_state.get("worklist")
     rows = selection.get("selection", {}).get("rows", []) if selection else []
     if not rows:
         st.caption("Select a row above to see that customer's risk indicators.")
         return
 
-    customer = display.iloc[rows[0]]
+    customer = ranked.iloc[rows[0]]
     st.markdown(f"#### {customer['customer_id']}")
 
     # Reference is computed over the whole scored cohort, never over the filtered view: "3×

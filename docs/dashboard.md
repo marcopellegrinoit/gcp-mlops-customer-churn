@@ -259,6 +259,14 @@ several frames deep in an Altair encoding — or, worse, as an indicator that si
 being listed, because `risk.cohort_reference` and `customer_indicators` both skip columns that
 are absent.
 
+That tolerance cuts both ways, and it is why the indicator panel is handed the **full** ranked
+frame rather than the ten-column subset the worklist table displays. `st.dataframe` reports a
+selection as a positional index, which maps onto either frame because they share a row order —
+so passing the narrowed one worked, and silently dropped three of the six `risk.DRIVERS`
+(support contacts, activity events, campaign participation) from every customer's panel,
+because those columns have no table column of their own and `customer_indicators` skips a
+driver that is missing from the row instead of raising on it.
+
 The two frames are checked differently, on purpose:
 
 * **`churn_risk_current` is checked by column.** A per-row pass would re-walk the whole scored
