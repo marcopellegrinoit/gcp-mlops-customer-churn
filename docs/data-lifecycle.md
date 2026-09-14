@@ -175,16 +175,27 @@ The mass point is what does the damage. Everyone whose last success predates the
 
 `days_since_last_successful_payment` is therefore **capped** at the `payment_recency_cap_days` var (currently **30**, set in `dbt_project.yml`), which collapses that pile into one stable bin so the feature stops moving once the history is older than the cap. Past a month, "stale" carries no further churn signal, so the truncated tail costs nothing. Two consequences worth knowing: the cap only binds once the history exceeds it (from `2026-09-21`, given the `2026-08-22` start), so the mechanical drift continues until then; and changing the var changes feature semantics, so it requires a retrain to take effect. `member_since_days` is anchored the same way and will develop the identical problem as tenure accumulates — it is not capped yet.
 
+### Accumulators and the same failure mode
+
+`days_since_last_successful_payment` was the acute case, but any *lifetime* aggregate over `raw.activity_cdc` has the same defect in slower motion: the log only ever grows, so a lifetime count encodes the dataset's age as much as the customer's behaviour, and can never match a baseline frozen at training time. `total_payment_attempts` and `renewal_count` are therefore computed over `activity_window_days` (90, matching `events_last_90d` and the rate columns) rather than over all history. The change is inert until the CDC history is older than the window — verified as **0 rows differing** at a 23-day history — so it costs nothing now and prevents the drift later.
+
+Two known exceptions, both deliberate:
+
+* **`total_events` is still lifetime.** Windowing it at 90 days would make it identical to `events_last_90d`, and dropping it is destructive: BigQuery cannot drop a column through a schema update, so Terraform would replace `features.customer_features` (the module sets `deletion_protection = false`), taking the historical snapshots that drift baselines and `ml.split_assignments` depend on with it. It needs a migration, not an edit.
+* **`member_since_days` is not affected in practice.** It is anchored to `CURRENT_DATE()` and does climb, but its spread is years, so a day's shift is negligible: PSI has stayed at **0.0002** while the payment-recency PSI went to 0.89.
+
+Features that are windowed or expressed as ratios — `events_last_30d`, `events_last_90d`, `payment_failure_rate_*`, `campaign_participation_rate`, `avg_*` — are climbing today only because the history is younger than their windows. They are self-correcting and need no change.
+
 A consequence worth expecting: windows can now legitimately be empty. `events_last_30d = 0` and a `NULL` `avg_transaction_30d` mean "this customer did nothing in that window", which is information, not a defect. (It reads as 0 dormant customers today only because `raw.activity_cdc` holds ~16 days of events so far — nobody *can* be 30-day dormant until the history is older than the window.)
 
 | Feature group | Columns produced |
 |---|---|
 | **Transaction rolling averages** | `avg_transaction_30d`, `avg_transaction_90d` |
-| **Payment health** | `payment_failure_rate_30d`, `payment_failure_rate_90d` (failed / total events in window), `total_payment_attempts` |
+| **Payment health** | `payment_failure_rate_30d`, `payment_failure_rate_90d` (failed / total events in window), `total_payment_attempts` (over `activity_window_days`) |
 | **Payment recency** | `days_since_last_successful_payment` — days since last `payment_status = 'success'`, capped at `payment_recency_cap_days` (30) to keep it stationary; **NULL** when no successful payment exists (MNAR — see Customer Pool section) |
 | **Engagement rolling averages** | `avg_engagement_30d`, `avg_engagement_90d` |
 | **Engagement behaviour** | `campaign_participation_rate` (fraction of events that are `campaign_action`), `preferred_channel` (mode via `APPROX_TOP_COUNT`) |
-| **Activity counts** | `total_events`, `events_last_30d`, `events_last_90d`, `renewal_count` |
+| **Activity counts** | `total_events` (lifetime — see below), `events_last_30d`, `events_last_90d`, `renewal_count` (over `activity_window_days`) |
 
 ### Layer 3 — Mart: `customer_features`
 

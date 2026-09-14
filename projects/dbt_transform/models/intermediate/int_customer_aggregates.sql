@@ -65,7 +65,11 @@ SELECT
         COUNTIF(e.days_since_event <= 90 AND e.payment_status = 'failed'),
         COUNTIF(e.days_since_event <= 90)
     )                                                                     AS payment_failure_rate_90d,
-    SUM(e.payment_attempts_last_30d)                                      AS total_payment_attempts,
+    -- Windowed for the same reason as the cap above: summed over all history this is an
+    -- accumulator, and an accumulator over a CDC log that only ever grows can never match a
+    -- baseline frozen at training time. Bounded to the window it reaches a steady state.
+    SUM(CASE WHEN e.days_since_event <= {{ var('activity_window_days') }}
+             THEN e.payment_attempts_last_30d END)                        AS total_payment_attempts,
 
     ANY_VALUE(lsp.days_since_last_successful_payment)                     AS days_since_last_successful_payment,
 
@@ -87,7 +91,9 @@ SELECT
     -- always inside its own window.
     COUNTIF(e.days_since_event <= 30)                                     AS events_last_30d,
     COUNTIF(e.days_since_event <= 90)                                     AS events_last_90d,
-    COUNTIF(e.event_type = 'membership_renewal')                          AS renewal_count
+    -- Windowed rather than lifetime, for the accumulator reason given above.
+    COUNTIF(e.event_type = 'membership_renewal'
+            AND e.days_since_event <= {{ var('activity_window_days') }})  AS renewal_count
 
 FROM events_windowed e
 LEFT JOIN last_successful_payment lsp USING (customer_id)

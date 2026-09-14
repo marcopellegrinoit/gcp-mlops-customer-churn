@@ -18,6 +18,12 @@ clean-targets:
 # makes the feature stationary. Changing it changes feature semantics: retrain after.
 vars:
   payment_recency_cap_days: 30
+  # Horizon for the columns that would otherwise be lifetime accumulators
+  # (total_payment_attempts, renewal_count). raw.activity_cdc only ever grows, so a
+  # lifetime count encodes the dataset's age as much as the customer's behaviour and
+  # drifts against any frozen baseline forever. Matches the 90d rolling windows already
+  # used by events_last_90d and the rate columns. Changing it needs a retrain.
+  activity_window_days: 90
 
 models:
   dbt_transform:
