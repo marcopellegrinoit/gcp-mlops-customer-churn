@@ -31,6 +31,44 @@ A deterministic id also makes submission idempotent, which matters for the ambig
 
 ---
 
+## Manual Test Runs: Skipping Stages
+
+The daily DAG is sequential by design, which makes iterating on its tail — drift monitoring and the retraining trigger — expensive: a full run regenerates CDC data, rebuilds every dbt model and boots a `BatchPredictionJob` container before reaching the part under test. Three optional boolean arguments let a manual execution start further down the graph:
+
+| Argument | Skips | Effect |
+|----------|-------|--------|
+| `skip_data_gen` | `data-gen-job` | Raw CDC tables are left exactly as they are. |
+| `skip_dbt` | `dbt-job` | `customer_features` is not rebuilt, so a hand-staged snapshot survives. |
+| `skip_batch_predict` | `submit_batch_predict` **and** `sync_predictions_to_ml_predictions` | No new scoring run; `ml.predictions` keeps yesterday's values. |
+
+All three default to `false` and are read with `map.get`/`default`, so they are simply absent from Cloud Scheduler's HTTP body and the production run is unchanged. `fetch_champion` always runs — drift monitoring is meaningless without a champion baseline, so the "no champion registered yet" early exit stays in force regardless of skips.
+
+```bash
+gcloud workflows run orchestrator-workflow \
+  --location=<region> \
+  --data='{
+    "project_id": "<project>",
+    "region": "<region>",
+    "alert_email": "<you@example.com>",
+    "alert_from_email": "<alerts@example.com>",
+    "alerts_enabled": false,
+    "skip_data_gen": true,
+    "skip_dbt": true,
+    "skip_batch_predict": true
+  }'
+```
+
+Two consequences are worth knowing before trusting the output of a skipped run:
+
+- **Skipping dbt without skipping data gen is the odd combination.** New raw events land but are never transformed, so the drift monitor reads the previous snapshot while the warehouse has moved on. Either skip both or skip neither, unless the divergence is the thing being tested.
+- **Skipping batch predict leaves the score-distribution check on stale input.** `drift_monitor.predictions.fetch_latest_predictions` looks up the champion's most recent *completed* daily-scoring `BatchPredictionJob`, so it will find the previous day's. Feature PSI — the signal that actually drives retraining — is computed straight from the feature snapshot and is unaffected. If no daily-scoring job has ever run, the check degrades to "no score signal this run" rather than failing (see [observability.md](observability.md)).
+
+The persistence gate counts *runs*, not days — `prior_breach_counts` looks at the last N rows in `ml.drift_metrics` for the current champion regardless of when they landed. Two skipped runs back to back over a drifted snapshot therefore satisfy "2 of the last 3" in minutes rather than nights, which is what makes the retraining trigger testable at all; the same property means throwaway test runs are permanently part of the history the production gate reads.
+
+Skips do not weaken the gates downstream of them: data-quality assertions, PSI persistence across runs, and the retrain back-off all still apply, so a test run can legitimately decide *not* to retrain. `alerts_enabled: false` is the usual choice for these runs, since the drift and suppression emails are otherwise indistinguishable from production alerts.
+
+---
+
 ## End-To-End Execution Flow (Google Cloud Workflows)
 
 Below is the concrete sequence executed step-by-step by the serverless orchestration component. Tasks run inside deterministic isolation, sharing features directly through BigQuery and models via the Vertex registry.

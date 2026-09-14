@@ -13,6 +13,20 @@ main:
           - alert_from_email: ${args.alert_from_email}
           - alerts_enabled: ${args.alerts_enabled}
           - model_display_name: "churn-predictor"
+          # Stage skips for manual test runs — absent from the Cloud Scheduler body,
+          # so map.get/default keeps the daily production run at "skip nothing".
+          - skip_data_gen: ${default(map.get(args, "skip_data_gen"), false)}
+          - skip_dbt: ${default(map.get(args, "skip_dbt"), false)}
+          - skip_batch_predict: ${default(map.get(args, "skip_batch_predict"), false)}
+
+    # Skipping data gen leaves the raw CDC tables untouched, which is the point when the
+    # run under test is drift monitoring or retraining against a snapshot you staged by
+    # hand: a fresh generation would overwrite the very distribution you're testing.
+    - maybe_skip_data_gen:
+        switch:
+          - condition: ${skip_data_gen}
+            next: maybe_skip_dbt
+        next: run_data_gen
 
     - run_data_gen:
         call: run_crj
@@ -29,7 +43,7 @@ main:
         switch:
           - condition: ${"error" in data_gen_op}
             next: alert_data_gen_failure
-        next: run_dbt
+        next: maybe_skip_dbt
 
     # Alerting is best-effort: a SendGrid/Secret Manager failure here must never
     # mask or replace the real pipeline failure being reported below.
@@ -54,6 +68,15 @@ main:
 
     - raise_data_gen:
         raise: ${data_gen_op.error}
+
+    # dbt rebuilds customer_features from whatever raw data is present, so it has to be
+    # skippable too: a snapshot hand-edited to carry synthetic drift survives a skipped
+    # data-gen but not a dbt run, which would recompute it straight back to normal.
+    - maybe_skip_dbt:
+        switch:
+          - condition: ${skip_dbt}
+            next: fetch_champion
+        next: run_dbt
 
     # dbt only runs after data-gen succeeds — transforming stale or missing
     # raw data would silently produce incorrect feature tables.
@@ -112,8 +135,19 @@ main:
     - check_champion_exists:
         switch:
           - condition: ${"models" in champion_resp.body and len(champion_resp.body.models) > 0}
-            next: run_batch_predict
+            next: maybe_skip_batch_predict
         next: done
+
+    # Skipping batch predict skips the prediction sync with it — sync_predictions reads the
+    # scratch output table off the job resource this step would have produced. Drift monitoring
+    # still works: feature PSI never touches prediction output, and the score-distribution check
+    # falls back to the champion's most recent completed batch job, which is stale but valid
+    # (and degrades to "no score signal" on its own if there is none).
+    - maybe_skip_batch_predict:
+        switch:
+          - condition: ${skip_batch_predict}
+            next: run_drift_monitor
+        next: run_batch_predict
 
     - run_batch_predict:
         call: submit_batch_predict
