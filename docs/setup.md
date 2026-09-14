@@ -107,7 +107,7 @@ dashboard_oauth_client_secret = ""
 
 # Monthly budget alert. The billing account is detected from the project, so there is
 # nothing to look up — set the amount and who to tell.
-monthly_budget_amount = 10
+monthly_budget_amount = 100
 budget_alert_emails   = ["you@example.com"]
 ```
 

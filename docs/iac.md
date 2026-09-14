@@ -155,7 +155,7 @@ What the budget *does* need is a permission, and it is the one permission in thi
 
 ```hcl
 # iac/terraform.tfvars — the account is detected, so only these two are worth setting
-monthly_budget_amount = 10
+monthly_budget_amount = 100
 budget_alert_emails   = ["you@example.com"]
 ```
 

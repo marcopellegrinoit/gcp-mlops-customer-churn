@@ -87,7 +87,7 @@ variable "monthly_budget_amount" {
     above which something has gone wrong and you want to hear about it.
   EOT
   type        = number
-  default     = 10
+  default     = 100
 }
 
 variable "budget_alert_emails" {
