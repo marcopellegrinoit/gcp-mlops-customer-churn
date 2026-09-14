@@ -6,8 +6,26 @@ steps:
       - -c
       - |
         set -euo pipefail
-        uvx ruff@${_RUFF_VERSION} check projects/data_contracts projects/ml_common projects/modeling projects/trainer
-        uvx ruff@${_RUFF_VERSION} format --check projects/data_contracts projects/ml_common projects/modeling projects/trainer
+        uvx ruff@${_RUFF_VERSION} check projects/obs_common projects/data_contracts projects/ml_common projects/modeling projects/trainer
+        uvx ruff@${_RUFF_VERSION} format --check projects/obs_common projects/data_contracts projects/ml_common projects/modeling projects/trainer
+
+  # obs-common is tested here for the same reason as data-contracts below: it is installed
+  # into every deployable, and five triggers carry it, so testing it once on the build that
+  # already lints it beats running the same suite five times. It had no lint or test step in
+  # any build at all — every image depended on it and nothing ran its suite. No pip-audit
+  # step: the package is deliberately stdlib-only and has no dependencies to audit.
+  - id: test-obs-common
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/obs_common
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
 
   # data-contracts is tested here rather than in its own build because every trigger that
   # carries it (trainer, serving, post-training, drift-monitor, dashboard) would otherwise

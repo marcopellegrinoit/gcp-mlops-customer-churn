@@ -35,6 +35,25 @@ constraint-dependencies = [
     "pydantic-settings>=2.14.2",
 ]
 
+# Running `pytest` from the repo root exercises every package's suite at once, which is what
+# a local pre-push check wants; Cloud Build still runs each package on its own, from its own
+# directory, against its own [tool.pytest.ini_options].
+#
+# importlib import mode is what makes the root run possible. Under the default "prepend" mode
+# pytest derives a module name from the file's location relative to the first ancestor without
+# an __init__.py, so eleven packages each holding tests/test_config.py all resolve to the same
+# `tests.test_config` and collection dies on the collision. (The empty tests/__init__.py files
+# that forced that were removed with this.) importlib gives each file a name derived from its
+# full path instead, so same-named modules in different packages coexist.
+[tool.pytest.ini_options]
+testpaths = ["projects"]
+addopts = "--import-mode=importlib"
+# Declared here as well as per-package: a root run collects the integration-marked tests from
+# every package, and an unregistered mark is a warning at best and an error under -W error.
+markers = [
+    "integration: tests requiring Docker or live GCP services (deselect with -m 'not integration')",
+]
+
 # Ruff config lives only here: no sub-package declares a [tool.ruff] table, so ruff resolves
 # every file in the workspace against this one. Keeps lint/format rules identical across packages.
 [tool.ruff]

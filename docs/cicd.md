@@ -52,13 +52,36 @@ pre-commit run ruff-check --all-files   # a single hook
 git commit --no-verify              # escape hatch; Cloud Build will still run the tests
 ```
 
+### Running the whole suite locally
+
+Cloud Build runs each package's tests on its own, from that package's directory, against its
+own `[tool.pytest.ini_options]`. A single command covering everything is a local convenience
+rather than something CI uses:
+
+```sh
+uv run pytest                        # every package's suite
+uv run pytest -m "not integration"   # skip the Testcontainers-backed tests (no Docker needed)
+```
+
+This needs the root `[tool.pytest.ini_options]` in [`pyproject.toml`](../pyproject.toml), which
+sets `--import-mode=importlib`. Under pytest's default `prepend` import mode a test module's
+name is derived from its path relative to the first ancestor directory without an
+`__init__.py` — so eleven packages each holding a `tests/test_config.py` all resolve to the
+same `tests.test_config`, and a root-level run dies during collection on the name collision
+(and on two `tests.conftest` plugins registering under one name). `importlib` derives a unique
+name from the full path instead. The empty `tests/__init__.py` files that forced the old
+behaviour are gone; per-package runs are unaffected, since each package's test basenames are
+unique within it.
+
 ---
 
 ## Lint, Integration Tests & Dependency Audit
 
 Pre-commit hooks (ruff, terraform, uv-lock) only run locally and are trivially bypassed with `git commit --no-verify` — Cloud Build is the actual, unbypassable gate, so every Python `.cloudbuild/*.yaml` file re-runs the checks that matter as blocking steps, in addition to the unit `test` step:
 
-* **`lint`** runs `uvx ruff@${_RUFF_VERSION} check` and `ruff format --check` against that component's own directory (or directories, for `trainer.cloudbuild.yaml`, which covers `ml_common`, `modeling`, and `trainer` in one step). `_RUFF_VERSION` is a substitution pinned to the same rev as the `ruff-pre-commit` hook in [`.pre-commit-config.yaml`](../.pre-commit-config.yaml), so a local `pre-commit run` and this CI gate never disagree about what counts as a lint failure. `uvx` (not a `pyproject.toml` dev dependency) is used because ruff isn't part of any workspace member's own dependency graph — this mirrors how the pre-commit hook manages its own isolated ruff install.
+* **`lint`** runs `uvx ruff@${_RUFF_VERSION} check` and `ruff format --check` against that component's own directory (or directories, for `trainer.cloudbuild.yaml`, which covers `obs_common`, `data_contracts`, `ml_common`, `modeling`, and `trainer` in one step). `_RUFF_VERSION` is a substitution pinned to the same rev as the `ruff-pre-commit` hook in [`.pre-commit-config.yaml`](../.pre-commit-config.yaml), so a local `pre-commit run` and this CI gate never disagree about what counts as a lint failure. `uvx` (not a `pyproject.toml` dev dependency) is used because ruff isn't part of any workspace member's own dependency graph — this mirrors how the pre-commit hook manages its own isolated ruff install.
+* **`test-obs-common` / `test-data-contracts`** run in `trainer.cloudbuild.yaml` rather than in builds of their own. Both packages are installed into several images, so five triggers carry each of them, and giving them their own build would run the same suite five times per push. `trainer-trigger` already watches and lints both, so it is where they are tested. Neither takes a `pip-audit` step: `obs_common` is stdlib-only with no dependencies to audit, and `data_contracts` resolves only `pydantic`, from the same lockfile the adjacent audits already cover.
+
 * **`integration-test`** runs `pytest -m integration` for the components that have real integration tests: `data_generator`, `serving`, `post_training`, and `trainer`. These spin up real service emulators via [Testcontainers](https://testcontainers.com/) — `ghcr.io/goccy/bigquery-emulator` and `fsouza/fake-gcs-server` — as sibling containers. This works without extra Cloud Build configuration because Cloud Build mounts `/var/run/docker.sock` into every build step by default, so `testcontainers` can talk to the host's Docker daemon the same way the `gcr.io/cloud-builders/docker` build/push steps do.
 
   **Known emulator limitation:** `ghcr.io/goccy/bigquery-emulator` (verified through v0.8.1, the newest release as of this writing) crashes with an internal WASM panic (`wasm trap: invalid memory address or nil pointer dereference`) on *any* table operation — `tables.insert` or a `CREATE TABLE` DDL query — inside a dataset literally named `ml`. That's not an edge case here: `split_assignments_table` (`"ml.split_assignments"`) in [`ml_common/config.py`](../projects/ml_common/src/ml_common/config.py) is the dataset every retraining/evaluation run reads and writes. Real BigQuery has no such restriction — `ml` isn't a reserved dataset name — so this is purely an emulator bug, not a signal to rename the dataset. Practically, it means `post_training.bigquery.read_split`, `post_training.batch_predict.create_batch_source_files`, and `trainer.data.export_snapshot`/`read_split` cannot be integration-tested locally; only their GCS-touching siblings (`post_training.storage`, the GCS half of `trainer.data`) and `serving.storage` have real emulator-backed coverage. The `ml.split_assignments`-touching functions remain covered by unit-level mocks only, the same ceiling that already applies to the Vertex AI Model Registry/Experiments code in `post_training.register`/`fetch_champion` and `trainer.experiment` (no local emulator exists for those either).
