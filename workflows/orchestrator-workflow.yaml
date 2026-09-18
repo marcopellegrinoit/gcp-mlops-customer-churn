@@ -494,6 +494,18 @@ poll_operation:
 submit_batch_predict:
   params: [project_id, region, champion_model, attempt: 0]
   steps:
+    # Vertex's capacity error reads "Machine type temporarily unavailable, please deploy with
+    # a different machine type or retry", and capacity is tracked per machine type — so
+    # resubmitting the identical spec only ever takes the weaker half of that advice. On
+    # 2026-09-15 four identical n1-standard-4 submissions failed over thirteen minutes and took
+    # the nightly run down with them. Each attempt now steps to the next equally-sized type
+    # (4 vCPU / >=15 GB, all CPU series Vertex supports for prediction) and the list wraps, so
+    # the final attempt re-tries the first type after it has had ~12 minutes to recover.
+    - pick_machine_type:
+        assign:
+          - machine_types: ["n1-standard-4", "n2-standard-4", "e2-standard-4"]
+          - machine_type: ${machine_types[attempt % len(machine_types)]}
+
     - submit:
         try:
           call: http.post
@@ -532,7 +544,7 @@ submit_batch_predict:
                   outputUri: ${"bq://" + project_id + ".ml"}
               dedicatedResources:
                 machineSpec:
-                  machineType: "n1-standard-4"
+                  machineType: ${machine_type}
                 startingReplicaCount: 1
                 maxReplicaCount: 1
           result: submit_resp
@@ -548,8 +560,9 @@ submit_batch_predict:
     # The job can reach JOB_STATE_FAILED with a capacity error (same "Machine type
     # temporarily unavailable" Vertex AI returns for the training pipeline's batch-test
     # jobs) rather than any http-level failure, so http.default_retry above never sees it.
-    # Resubmit a bounded number of times before giving up so the daily run self-heals
-    # instead of paging on a transient condition.
+    # Resubmit a bounded number of times — on the next machine type each round, see
+    # pick_machine_type — before giving up, so the daily run self-heals instead of paging
+    # on a transient condition.
     - check_capacity_failure:
         switch:
           - condition: ${job.state == "JOB_STATE_FAILED" and text.match_regex(default(map.get(job, ["error", "message"]), ""), "(?i)temporarily unavailable") and attempt < 3}
