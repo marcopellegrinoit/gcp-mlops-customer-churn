@@ -35,11 +35,11 @@ Forking only becomes possible if `google-cloud-storage` is demoted from a real d
 
 **The separation costs nothing.** `conflicts` is designed for a single deployable that needs mutually exclusive variants of one library (CPU vs. CUDA builds of the same framework). `dbt_transform` is not that: it imports no workspace package and no workspace package imports it — it is the one container with no library edges in the diagram below — so a shared lock buys it zero version-parity guarantee. It is also not a Python package at all (no `[build-system]`; it is a dbt project), so joining the workspace would require `package = false` regardless. Keeping it separate additionally preserves its narrow Docker context (`projects/dbt_transform`, with [its own `.dockerignore`](../projects/dbt_transform/.dockerignore)): an unrelated bump to, say, XGBoost cannot invalidate the dbt image's build cache, which it would if the dbt build had to copy the root manifest and lock.
 
-**Operational consequence.** The two locks are maintained independently, including their `[tool.uv] constraint-dependencies` floors — a Dependabot advisory affecting both trees has to be pinned in both `pyproject.toml` files. The `uv-lock` pre-commit hook matches only root-level manifests, so it does not re-lock `dbt_transform`; a stale dbt lock surfaces in Cloud Build instead, where `validate` and `audit` run `uv run --frozen`. See [cicd.md](cicd.md#pre-commit-hooks).
+**Operational consequence.** The two locks are maintained independently, including their `[tool.uv] constraint-dependencies` floors — a Dependabot advisory affecting both trees has to be pinned in both `pyproject.toml` files. [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) therefore declares the `uv-lock` hook twice: the upstream hook's `files` pattern is root-anchored, so a single entry would silently never fire on a dbt-only dependency change, and the stale lock would surface only in Cloud Build, where `validate` and `audit` run `uv run --frozen`. See [cicd.md](cicd.md#pre-commit-hooks).
 
 ```mermaid
 flowchart LR
-    subgraph Packages["packages/ & obs_common, ml_common, modeling (sharable libraries)"]
+    subgraph Packages["projects/ (sharable libraries — never containerised)"]
         OBS[obs_common<br/>stdlib only]
         MLC[ml_common<br/>preprocessing, gate metrics]
         MOD[modeling<br/>XGBoost, Optuna, SHAP]
@@ -81,7 +81,7 @@ Each arrow is a real `pyproject.toml` dependency, enforced at build time by the 
 The codebase is explicitly divided into two structural domains:
 
 * **Projects (Deployables):** Located within the `projects/` directory, these represent independent executables that contain a distinct runtime entry point, generate isolated container images or immutable templates, and target a specific cloud infrastructure destination. Each project specifies its own specialized operational requirements (e.g., FastAPI/Uvicorn for serving, or XGBoost/Optuna for training) without polluting neighboring microservices.
-* **Packages (Sharables):** Located within the `packages/` directory, these represent internal libraries that compile code, shared utility methods, validation schemas, and database connectors. They are never executed independently but are instead declared as editable local workspace dependencies by the deployable projects. This configuration guarantees that data contracts and feature definitions remain identical between the training and serving boundaries.
+* **Packages (Sharables):** `obs_common`, `data_contracts`, `ml_common` and `modeling`. These represent internal libraries that compile code, shared utility methods, validation schemas, and database connectors. They live under `projects/` alongside the deployables — the split is by role, not by directory — but are never executed independently, carry no Dockerfile, and are instead declared as editable local workspace dependencies by the deployable projects. This configuration guarantees that data contracts and feature definitions remain identical between the training and serving boundaries.
 
 ---
 
@@ -98,12 +98,7 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 ├── pyproject.toml              # Global workspace settings, Ruff config & workspace lock
 ├── uv.lock                     # Shared lockfile guaranteeing dependency parity (all members)
 │
-├── packages/                   # INTERNAL LIBRARIES (Sharable code blocks)
-│   └── shared/                 # Common BQ connectors & feature schemas
-│       ├── pyproject.toml
-│       └── src/shared/
-│
-├── projects/                   # DEPLOYABLES (Executables with custom runtimes)
+├── projects/                   # DEPLOYABLES + the sharable libraries they import
 │   ├── data_generator/         # CDC Data Simulation Job
 │   │   ├── Dockerfile
 │   │   ├── pyproject.toml      # Dependencies: obs-common (workspace) + google-cloud-bigquery, numpy
@@ -224,8 +219,7 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 
 * **Workspace Root:** Houses the global package manager definitions, project boundaries, the workspace environment lockfile, and the workspace-wide Ruff configuration — deliberately declared once here rather than per package, so lint rules cannot drift between components. See [cicd.md](cicd.md#pre-commit-hooks).
 * **Cloud Build Directory (`.cloudbuild/`):** One YAML file per deployable, each defining the build → push → deploy pipeline for that service. Triggers are declared in `iac/config/triggers.yaml` and provisioned via Terraform; the YAML files only contain steps.
-* **Packages Directory (`packages/shared/`):** Contains internal libraries, structured data validation schemas, feature manifests, and BigQuery communication layers shared across runtimes.
-* **Projects Directory (`projects/`):**
+* **Projects Directory (`projects/`):** Holds both the containerised deployables and the sharable libraries they import — internal libraries, structured data validation schemas, feature manifests, and BigQuery communication layers. There is no separate `packages/` directory; the deployable/library split is by role, as described under [Projects vs. Packages Philosophy](#projects-vs-packages-philosophy).
   * `data_generator/`: The CDC simulation module. Executes as an ephemeral Cloud Run job to append synthetic events to BigQuery, mimicking an upstream transactional database feed. Each invocation streams a configurable batch of events (`BATCH_SIZE`, default 2000) drawn from a fixed user pool, with realistic churn-correlated signals. Structural anomalies can be injected at a configurable rate (`ANOMALY_RATE`) to test downstream drift detection. Runtime targets are injected via env vars: `BQ_PROJECT_ID`, `BQ_DATASET_ID`, `BQ_TABLE_ID`.
   * `dbt_transform/`: The feature engineering engine. Contains the dbt project configuration, SQL models, and dependencies required to transform raw CDC telemetry into structured, ML-ready feature matrices. The only component outside the uv workspace: it owns a separate `uv.lock`, because `dbt-bigquery`'s `google-cloud-storage` cap is irreconcilable with the floor the ML containers need — see [Why dbt_transform is not a workspace member](#why-dbt_transform-is-not-a-workspace-member).
   * `training_pipeline/`: The KFP pipeline definition package. Contains `build_pipeline()` and `compile_pipeline()` — used by Cloud Build to compile the six-stage training DAG into a Vertex AI Pipelines YAML, and `upload_pipeline()` to push that template into the `pipeline-templates` Artifact Registry repo via `kfp.registry.RegistryClient`. This package is never containerised; it installs only `kfp` and `modeling` (for HPO defaults). It has its own dedicated `training-pipeline-trigger`, decoupled from the trainer/post-training/serving image builds, so pipeline-structure-only changes don't force a container rebuild.

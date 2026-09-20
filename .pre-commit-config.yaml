@@ -45,10 +45,23 @@ repos:
 
   # Keeps uv.lock consistent with every workspace manifest. The Docker builds run
   # `uv sync --frozen`, which fails outright on a stale lock — catch it before the push.
+  #
+  # Two entries, because there are two locks: projects/dbt_transform is outside the uv
+  # workspace and owns its own (see docs/architecture.md). The upstream hook's `files`
+  # pattern is root-anchored, so it matches only the root manifests and would never fire
+  # on a dbt-only dependency change — the stale lock would surface as a Cloud Build
+  # failure instead.
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.12.5
     hooks:
       - id: uv-lock
+        name: uv-lock (workspace)
+        alias: uv-lock-workspace
+      - id: uv-lock
+        name: uv-lock (dbt_transform)
+        alias: uv-lock-dbt
+        files: ^projects/dbt_transform/(pyproject\.toml|uv\.lock)$
+        args: [--project, projects/dbt_transform]
 
   # No nbstripout hook here on purpose: the notebooks under notebooks/ commit their outputs
   # deliberately — the rendered plots and tables are the record of the feature-selection
