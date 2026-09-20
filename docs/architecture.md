@@ -41,6 +41,7 @@ Forking only becomes possible if `google-cloud-storage` is demoted from a real d
 flowchart LR
     subgraph Packages["projects/ (sharable libraries — never containerised)"]
         OBS[obs_common<br/>stdlib only]
+        DC[data_contracts<br/>pydantic only]
         MLC[ml_common<br/>preprocessing, gate metrics]
         MOD[modeling<br/>XGBoost, Optuna, SHAP]
     end
@@ -57,6 +58,7 @@ flowchart LR
 
     TP[training_pipeline<br/>compiled by CI, never containerised]
 
+    DC --> MLC
     MLC --> MOD
 
     OBS --> DG
@@ -65,16 +67,23 @@ flowchart LR
     OBS --> DM
     OBS --> DASH
 
+    DC --> TR
+    DC --> PT
+    DC --> SV
+    DC --> DM
+    DC --> DASH
+
     MLC --> TR
     MLC --> PT
     MLC --> SV
     MLC --> DM
+    MLC --> TP
 
     MOD --> TR
     MOD --> TP
 ```
 
-Each arrow is a real `pyproject.toml` dependency, enforced at build time by the consuming project's Dockerfile as described above — `dbt_transform` depends on none of these packages, which is why it's the one container with no workspace-library edges into it. `dashboard` takes only `obs_common`: it reads a table the pipeline already wrote and never loads a model, so depending on `ml_common` would drag XGBoost and scikit-learn into an image that renders charts.
+Each arrow is a real `pyproject.toml` dependency, enforced at build time by the consuming project's Dockerfile as described above — `dbt_transform` depends on none of these packages, which is why it's the one container with no workspace-library edges into it. `dashboard` takes only `obs_common` and `data_contracts`: it reads a table the pipeline already wrote and never loads a model, so reaching the serving container's column names through `ml_common` instead would drag XGBoost and scikit-learn into an image that renders charts — which is the entire reason `data_contracts` is a package of its own. Note the two edges that are deliberately absent: nothing points `obs_common` at `serving` (it has no Cloud Logging setup to share) and nothing points `ml_common` at `dashboard`.
 
 ## Projects vs. Packages Philosophy
 
@@ -222,15 +231,15 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 * **Projects Directory (`projects/`):** Holds both the containerised deployables and the sharable libraries they import — internal libraries, structured data validation schemas, feature manifests, and BigQuery communication layers. There is no separate `packages/` directory; the deployable/library split is by role, as described under [Projects vs. Packages Philosophy](#projects-vs-packages-philosophy).
   * `data_generator/`: The CDC simulation module. Executes as an ephemeral Cloud Run job to append synthetic events to BigQuery, mimicking an upstream transactional database feed. Each invocation streams a configurable batch of events (`BATCH_SIZE`, default 2000) drawn from a fixed user pool, with realistic churn-correlated signals. Structural anomalies can be injected at a configurable rate (`ANOMALY_RATE`) to test downstream drift detection. Runtime targets are injected via env vars: `BQ_PROJECT_ID`, `BQ_DATASET_ID`, `BQ_TABLE_ID`.
   * `dbt_transform/`: The feature engineering engine. Contains the dbt project configuration, SQL models, and dependencies required to transform raw CDC telemetry into structured, ML-ready feature matrices. The only component outside the uv workspace: it owns a separate `uv.lock`, because `dbt-bigquery`'s `google-cloud-storage` cap is irreconcilable with the floor the ML containers need — see [Why dbt_transform is not a workspace member](#why-dbt_transform-is-not-a-workspace-member).
-  * `training_pipeline/`: The KFP pipeline definition package. Contains `build_pipeline()` and `compile_pipeline()` — used by Cloud Build to compile the six-stage training DAG into a Vertex AI Pipelines YAML, and `upload_pipeline()` to push that template into the `pipeline-templates` Artifact Registry repo via `kfp.registry.RegistryClient`. This package is never containerised; it installs only `kfp` and `modeling` (for HPO defaults). It has its own dedicated `training-pipeline-trigger`, decoupled from the trainer/post-training/serving image builds, so pipeline-structure-only changes don't force a container rebuild.
+  * `training_pipeline/`: The KFP pipeline definition package. Contains `build_pipeline()` and `compile_pipeline()` — used by Cloud Build to compile the six-stage training DAG into a Vertex AI Pipelines YAML, and `upload_pipeline()` to push that template into the `pipeline-templates` Artifact Registry repo via `kfp.registry.RegistryClient`. This package is never containerised; it installs `kfp` and `google-cloud-pipeline-components` plus `modeling` and `ml_common`, for the pipeline's compile-time HPO defaults and the policy `settings_env` pins onto each task's container. It has its own dedicated `training-pipeline-trigger`, decoupled from the trainer/post-training/serving image builds, so pipeline-structure-only changes don't force a container rebuild.
   * `obs_common/`: The MLE-owned observability package. Contains `configure_logging()`, the Cloud Logging-aware replacement for `logging.basicConfig` that every container entrypoint calls at startup — see [observability.md](observability.md#log-severity). Deliberately stdlib-only: it is the one package installed into *every* image, including `data_generator`, which carries no ML or GCP libraries beyond the BigQuery client, so any dependency added here would land in all of them.
   * `data_contracts/`: The platform's shared data schemas — every Pydantic model for a payload that crosses a container or storage boundary, plus `to_json`, the serialiser those payloads are written with. Its only dependency is `pydantic`, which is the entire reason it is its own package rather than part of `ml_common`: `dashboard` needs to agree with the serving container on a column name, and reaching that agreement through `ml-common` would pull xgboost and scikit-learn into an image that renders charts. Same discipline as `obs_common`, applied to dependencies rather than to the standard library. See [Data Contracts & Configuration](#data-contracts--configuration).
   * `ml_common/`: The DS-owned inference logic package. Contains feature preprocessing, the champion/challenger metrics gate, PSI drift, the data-quality assertions, and — in `config.py` — the env-driven model policy every training and evaluation stage reads. Pure Python, no GCP dependencies, and critically no Optuna/SHAP. Shared by `modeling` (training), `post_training` (the champion/challenger gate), `drift_monitor`, `trainer` and `serving` (batch prediction), so none of those containers install training-only dependencies.
   * `modeling/`: The DS-owned training/HPO package. Contains XGBoost training and Optuna HPO, depending on `ml_common` for preprocessing — pure Python with no GCP dependencies. Unit-testable without cloud credentials.
-  * `trainer/`: The MLE-owned heavy pipeline wrapper. Imports `modeling`/`ml_common` as workspace dependencies and adds GCP I/O for the `data_split`/`hpo`/`train` stages: BigQuery → GCS Parquet export and Vertex AI Experiments logging. Produces the trainer container image.
-  * `post_training/`: The MLE-owned post-training pipeline stage container. Imports `ml_common` only (no Optuna/SHAP) and adds GCP I/O for the `evaluate`/`register_or_reject`/`notify` CLI stages: the champion/challenger gate, Vertex AI Model Registry promotion, and the terminal outcome report (logging-only — see [observability.md](observability.md)). This container never serves live predictions — it only runs as one-shot KFP pipeline steps, each invoking a different CLI subcommand.
-  * `serving/`: The MLE-owned production batch-prediction container. Imports `ml_common` only (no Optuna/SHAP) and exposes a FastAPI app (`app.py`) implementing Vertex AI's custom-container prediction contract (`/predict`, `/health`), used by Vertex AI `BatchPredictionJob` to score the daily feature snapshot. Distinct from `post-training`: this image never runs pipeline stages, it only ever serves predictions.
-  * `dashboard/`: The business-user surface, and the only deployable in this repo that serves a human rather than the pipeline. A Streamlit app on a Cloud Run **service** (not a Job), fronted by Identity-Aware Proxy, reading two dbt views that join predictions back to the features a retention owner can act on. It imports `obs_common` only — no model is ever loaded here. Its design constraints are unlike every other component's: it must never present a prediction as an observation, never call a cohort contrast a model explanation, and never let a stale snapshot look like a quiet week. See [dashboard.md](dashboard.md).
+  * `trainer/`: The MLE-owned heavy pipeline wrapper. Imports `modeling`, `ml_common`, `data_contracts` and `obs_common` as workspace dependencies and adds GCP I/O for the `data_split`/`hpo`/`train` stages: BigQuery → GCS Parquet export and Vertex AI Experiments logging. Produces the trainer container image.
+  * `post_training/`: The MLE-owned post-training pipeline stage container. Imports `ml_common`, `data_contracts` and `obs_common` (no Optuna/SHAP) and adds GCP I/O for the `evaluate`/`register_or_reject`/`notify` CLI stages: the champion/challenger gate, Vertex AI Model Registry promotion, and the terminal outcome report (logging-only — see [observability.md](observability.md)). This container never serves live predictions — it only runs as one-shot KFP pipeline steps, each invoking a different CLI subcommand.
+  * `serving/`: The MLE-owned production batch-prediction container. Imports `ml_common` and `data_contracts` (no Optuna/SHAP) and exposes a FastAPI app (`app.py`) implementing Vertex AI's custom-container prediction contract (`/predict`, `/health`), used by Vertex AI `BatchPredictionJob` to score the daily feature snapshot. Distinct from `post-training`: this image never runs pipeline stages, it only ever serves predictions.
+  * `dashboard/`: The business-user surface, and the only deployable in this repo that serves a human rather than the pipeline. A Streamlit app on a Cloud Run **service** (not a Job), fronted by Identity-Aware Proxy, reading two dbt views that join predictions back to the features a retention owner can act on. It imports `obs_common` and `data_contracts` only — no model is ever loaded here. Its design constraints are unlike every other component's: it must never present a prediction as an observation, never call a cohort contrast a model explanation, and never let a stale snapshot look like a quiet week. See [dashboard.md](dashboard.md).
 * **Workflows Directory (`workflows/`):** Contains the state-machine logic maps for the cloud orchestrator, detailing execution steps, retry policies, and failure notification boundaries.
 * **IaC Directory (`iac/`):** Houses the declarative infrastructure code required to bootstrap and manage the GCP environment. See [iac.md](iac.md) for full details.
 

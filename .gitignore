@@ -222,9 +222,25 @@ __marimo__/
 
 # Terraform
 .terraform/
-.terraform.*
-.tfstate
-terraform.*
+.terraform.tfstate.lock.info
+.terraformrc
+terraform.rc
+crash.log
+crash.*.log
+# State holds real resource attributes in plaintext; never commit it.
+*.tfstate
+*.tfstate.*
+# Variable files carry project IDs and occasionally secrets. The bare `terraform.*`
+# rule this replaces missed every other name (prod.tfvars, dev.auto.tfvars).
+*.tfvars
+*.tfvars.json
+!*example.tfvars
+!*.tfvars.example
+# The root provider lock file IS committed: it pins provider versions and their
+# hashes, which is what makes a `terraform init` reproducible. The previous
+# `.terraform.*` rule ignored it by accident. The per-module copies are artifacts
+# of stray `terraform init` runs inside iac/modules/* and stay ignored.
+iac/modules/**/.terraform.lock.hcl
 
 # Serena MCP local tooling state
 .serena/
