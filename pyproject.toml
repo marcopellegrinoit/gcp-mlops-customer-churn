@@ -28,11 +28,15 @@ environments = [
 # cryptography: GHSA-g6cj-pr64-35w5 (PKCS#7 Bleichenbacher oracle)
 # pyasn1: GHSA-m4p7-r5rc-7g4j, GHSA-hm4w-wwcw-mr6r, GHSA-8ppf-4f7h-5ppj (DoS via decoder)
 # pydantic-settings: GHSA-4xgf-cpjx-pc3j (symlink traversal in NestedSecretsSettingsSource)
+# anyio: GHSA-82r6-8w77-94w6 (TLS certificate spoofing via IDNA 2003 host name encoding),
+#        GHSA-3w57-8xmc-8v26 (extra_groups ignored, so privilege-dropping in child processes fails),
+#        GHSA-5p39-cfhj-2xmp (process-pool workers block indefinitely on undrained stderr)
 constraint-dependencies = [
     "numba>=0.61",
     "cryptography>=50.0.0",
     "pyasn1>=0.6.4",
     "pydantic-settings>=2.14.2",
+    "anyio>=4.14.2",
 ]
 
 # Running `pytest` from the repo root exercises every package's suite at once, which is what

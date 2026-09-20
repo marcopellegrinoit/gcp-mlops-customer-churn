@@ -14,10 +14,13 @@ dependencies = [
 # pyasn1: GHSA-m4p7-r5rc-7g4j, GHSA-hm4w-wwcw-mr6r, GHSA-8ppf-4f7h-5ppj (DoS via decoder)
 # setuptools: GHSA-h35f-9h28-mq5c (MANIFEST.in exclusion bypass via NFC/NFD collision)
 # msgpack: GHSA-6v7p-g79w-8964 (out-of-bounds read on Unpacker reuse after caught error)
+# anyio: GHSA-82r6-8w77-94w6 (TLS certificate spoofing via IDNA 2003 host name encoding),
+#        GHSA-5p39-cfhj-2xmp (process-pool workers block indefinitely on undrained stderr)
 constraint-dependencies = [
     "sqlparse>=0.6.0",
     "cryptography>=50.0.0",
     "pyasn1>=0.6.4",
     "setuptools>=83.0.0",
     "msgpack>=1.2.1",
+    "anyio>=4.14.2",
 ]
