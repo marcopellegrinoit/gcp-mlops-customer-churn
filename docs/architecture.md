@@ -4,9 +4,38 @@ This repository is organized as a unified workspace powered by `uv`. Rather than
 
 ## The Workspace Paradigm
 
-The repository uses a single, global lockfile to guarantee complete reproducibility and version parity across all development, staging, and production environments. By defining independent project modules within a single workspace, the system enforces hard boundaries around individual execution contexts while still providing a local, direct method for consuming internal code libraries.
+The repository uses a single, global lockfile across every Python component that shares code, to guarantee complete reproducibility and version parity across all development, staging, and production environments. By defining independent project modules within a single workspace, the system enforces hard boundaries around individual execution contexts while still providing a local, direct method for consuming internal code libraries. There is exactly one deliberate exception — `dbt_transform`, which carries its own lockfile for the reasons in [Why dbt_transform is not a workspace member](#why-dbt_transform-is-not-a-workspace-member).
 
 **Cross-project imports are opt-in, not automatic.** Sharing one workspace lockfile does not mean every container can import every other project's code. A project's source only becomes importable inside another project's container when both of the following are true: (1) the consuming project declares it as a dependency in its own `pyproject.toml`, and (2) the consuming project's `Dockerfile` explicitly `COPY`s that dependency's `pyproject.toml` and `src/` before running `uv sync --package <name>`. For example, `trainer/Dockerfile` copies in `ml-common` and `modeling` because `trainer` depends on both — but `serving`'s Dockerfile only copies `ml-common`, so `serving` cannot import `trainer` or `modeling` code even though they live in the same workspace. Each `Dockerfile` is therefore the actual enforcement point for import boundaries between deployables, not just a build-speed optimization.
+
+### Why dbt_transform is not a workspace member
+
+[`projects/dbt_transform/`](../projects/dbt_transform/) is absent from the `[tool.uv.workspace] members` list in the root [`pyproject.toml`](../pyproject.toml) and keeps its own [`uv.lock`](../projects/dbt_transform/uv.lock). This is the one place the "one lockfile" rule is broken on purpose, so it is worth recording why, and why the obvious alternatives were rejected.
+
+**A merged lock does not resolve.** `dbt-bigquery` 1.12.1 caps `google-cloud-storage<3.2`; `trainer`, `serving`, `post_training` and `drift_monitor` each require `google-cloud-storage>=3.14.1,<4`. Adding dbt as a member fails outright:
+
+```text
+× No solution found when resolving dependencies
+  ╰─▶ Because dbt-bigquery==1.12.1 depends on google-cloud-storage>=2.4,<3.2
+      and drift-monitor depends on google-cloud-storage>=3.14.1,<4, we can
+      conclude that dbt-transform and drift-monitor are incompatible.
+```
+
+The only way through is to relax that floor workspace-wide, which resolves at `google-cloud-storage` 3.1.1 — thirteen minor versions back — and leaves dbt's transitive cap governing the GCS client in four containers that never run dbt. It also pulls 43 dbt-only packages into the shared lock.
+
+**`tool.uv.conflicts` does not solve it either.** uv can fork a resolution for mutually exclusive dependency *groups* or *extras*, but the conflicting `google-cloud-storage` floor is a regular dependency of those four members, and a member's regular dependencies are present in every fork. Declaring the conflict changes nothing:
+
+```text
+And because drift-monitor:dbt depends on dbt-bigquery>=1.12.1 and
+drift-monitor depends on google-cloud-storage>=3.14.1 …
+your workspace's requirements are unsatisfiable.
+```
+
+Forking only becomes possible if `google-cloud-storage` is demoted from a real dependency to an optional group in all four projects. That does lock — both 3.1.1 and 3.14.1 coexist in one file — at a price that is worse than the problem: the lockfile grows from 439 KB to 1.40 MB, because forking duplicates resolution branches across the whole graph; `uv sync --package drift-monitor` stops installing the GCS client, so every Dockerfile and Cloud Build step needs an explicit `--group gcs` and any that forgets it produces an image that builds green and raises `ImportError` in Cloud Run; and the conflict set forces the four `gcs` groups to be mutually exclusive with *each other*, though none of them actually conflict, making `--all-groups` unresolvable by construction. That trades a build-time guarantee — `uv sync --frozen` failing loudly — for a runtime one.
+
+**The separation costs nothing.** `conflicts` is designed for a single deployable that needs mutually exclusive variants of one library (CPU vs. CUDA builds of the same framework). `dbt_transform` is not that: it imports no workspace package and no workspace package imports it — it is the one container with no library edges in the diagram below — so a shared lock buys it zero version-parity guarantee. It is also not a Python package at all (no `[build-system]`; it is a dbt project), so joining the workspace would require `package = false` regardless. Keeping it separate additionally preserves its narrow Docker context (`projects/dbt_transform`, with [its own `.dockerignore`](../projects/dbt_transform/.dockerignore)): an unrelated bump to, say, XGBoost cannot invalidate the dbt image's build cache, which it would if the dbt build had to copy the root manifest and lock.
+
+**Operational consequence.** The two locks are maintained independently, including their `[tool.uv] constraint-dependencies` floors — a Dependabot advisory affecting both trees has to be pinned in both `pyproject.toml` files. The `uv-lock` pre-commit hook matches only root-level manifests, so it does not re-lock `dbt_transform`; a stale dbt lock surfaces in Cloud Build instead, where `validate` and `audit` run `uv run --frozen`. See [cicd.md](cicd.md#pre-commit-hooks).
 
 ```mermaid
 flowchart LR
@@ -66,8 +95,8 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 │   └── data-gen.cloudbuild.yaml
 ├── .dockerignore               # Context exclusions for the five root-context image builds
 ├── .pre-commit-config.yaml     # Local lint/format gate (see cicd.md)
-├── pyproject.toml              # Global workspace settings, Ruff config & single universal lock
-├── uv.lock                     # Shared lockfile guaranteeing dependency parity
+├── pyproject.toml              # Global workspace settings, Ruff config & workspace lock
+├── uv.lock                     # Shared lockfile guaranteeing dependency parity (all members)
 │
 ├── packages/                   # INTERNAL LIBRARIES (Sharable code blocks)
 │   └── shared/                 # Common BQ connectors & feature schemas
@@ -193,12 +222,12 @@ The workspace is organized to optimize Cloud Build caching mechanisms and preser
 
 ### Directory Descriptions
 
-* **Workspace Root:** Houses the global package manager definitions, project boundaries, the universal environment lockfile, and the workspace-wide Ruff configuration — deliberately declared once here rather than per package, so lint rules cannot drift between components. See [cicd.md](cicd.md#pre-commit-hooks).
+* **Workspace Root:** Houses the global package manager definitions, project boundaries, the workspace environment lockfile, and the workspace-wide Ruff configuration — deliberately declared once here rather than per package, so lint rules cannot drift between components. See [cicd.md](cicd.md#pre-commit-hooks).
 * **Cloud Build Directory (`.cloudbuild/`):** One YAML file per deployable, each defining the build → push → deploy pipeline for that service. Triggers are declared in `iac/config/triggers.yaml` and provisioned via Terraform; the YAML files only contain steps.
 * **Packages Directory (`packages/shared/`):** Contains internal libraries, structured data validation schemas, feature manifests, and BigQuery communication layers shared across runtimes.
 * **Projects Directory (`projects/`):**
   * `data_generator/`: The CDC simulation module. Executes as an ephemeral Cloud Run job to append synthetic events to BigQuery, mimicking an upstream transactional database feed. Each invocation streams a configurable batch of events (`BATCH_SIZE`, default 2000) drawn from a fixed user pool, with realistic churn-correlated signals. Structural anomalies can be injected at a configurable rate (`ANOMALY_RATE`) to test downstream drift detection. Runtime targets are injected via env vars: `BQ_PROJECT_ID`, `BQ_DATASET_ID`, `BQ_TABLE_ID`.
-  * `dbt_transform/`: The feature engineering engine. Contains the dbt project configuration, SQL models, and dependencies required to transform raw CDC telemetry into structured, ML-ready feature matrices.
+  * `dbt_transform/`: The feature engineering engine. Contains the dbt project configuration, SQL models, and dependencies required to transform raw CDC telemetry into structured, ML-ready feature matrices. The only component outside the uv workspace: it owns a separate `uv.lock`, because `dbt-bigquery`'s `google-cloud-storage` cap is irreconcilable with the floor the ML containers need — see [Why dbt_transform is not a workspace member](#why-dbt_transform-is-not-a-workspace-member).
   * `training_pipeline/`: The KFP pipeline definition package. Contains `build_pipeline()` and `compile_pipeline()` — used by Cloud Build to compile the six-stage training DAG into a Vertex AI Pipelines YAML, and `upload_pipeline()` to push that template into the `pipeline-templates` Artifact Registry repo via `kfp.registry.RegistryClient`. This package is never containerised; it installs only `kfp` and `modeling` (for HPO defaults). It has its own dedicated `training-pipeline-trigger`, decoupled from the trainer/post-training/serving image builds, so pipeline-structure-only changes don't force a container rebuild.
   * `obs_common/`: The MLE-owned observability package. Contains `configure_logging()`, the Cloud Logging-aware replacement for `logging.basicConfig` that every container entrypoint calls at startup — see [observability.md](observability.md#log-severity). Deliberately stdlib-only: it is the one package installed into *every* image, including `data_generator`, which carries no ML or GCP libraries beyond the BigQuery client, so any dependency added here would land in all of them.
   * `data_contracts/`: The platform's shared data schemas — every Pydantic model for a payload that crosses a container or storage boundary, plus `to_json`, the serialiser those payloads are written with. Its only dependency is `pydantic`, which is the entire reason it is its own package rather than part of `ml_common`: `dashboard` needs to agree with the serving container on a column name, and reaching that agreement through `ml-common` would pull xgboost and scikit-learn into an image that renders charts. Same discipline as `obs_common`, applied to dependencies rather than to the standard library. See [Data Contracts & Configuration](#data-contracts--configuration).

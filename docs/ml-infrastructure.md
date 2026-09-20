@@ -264,7 +264,7 @@ Images are built by Cloud Build on every merge to `main` that touches the respec
 
 ### Dependency alignment between training, evaluation, and serving
 
-The training, post-training, and serving containers are independently built but must remain library-compatible. All three images pin their dependencies via a single **uv lock file** (`uv.lock`) at the workspace root. Each Dockerfile copies this file into the build context and runs `uv sync --frozen`, ensuring the entire monorepo resolves to the same dependency graph. Bumping a library version (e.g. XGBoost) requires updating the workspace lock file and rebuilding all affected images in the same Cloud Build run.
+The training, post-training, and serving containers are independently built but must remain library-compatible. All three images pin their dependencies via a single **uv lock file** (`uv.lock`) at the workspace root. Each Dockerfile copies this file into the build context and runs `uv sync --frozen`, ensuring every workspace member resolves to the same dependency graph. (`dbt_transform` is the one component outside that workspace, with its own lock — it shares no library with these three, so nothing here depends on it resolving identically; see [architecture.md](architecture.md#why-dbt_transform-is-not-a-workspace-member).) Bumping a library version (e.g. XGBoost) requires updating the workspace lock file and rebuilding all affected images in the same Cloud Build run.
 
 ---
 

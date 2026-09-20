@@ -27,7 +27,7 @@ Cloud Build is the authority on whether a change is deployable, but it is a slow
 | `check-merge-conflict`, `check-case-conflict` | all files | Unresolved conflict markers; names that collide on case-insensitive filesystems |
 | `ruff-check --fix` | `*.py`, `*.ipynb` | Lint + autofix (see rules below) |
 | `ruff-format` | `*.py` | Formatting, 100-column lines |
-| `uv-lock` | workspace manifests | Re-locks when a `pyproject.toml` changes, so `uv sync --frozen` in the Dockerfiles never fails on a stale `uv.lock` |
+| `uv-lock` | root `pyproject.toml`/`uv.lock` | Re-locks the workspace when a manifest changes, so `uv sync --frozen` in the Dockerfiles never fails on a stale `uv.lock`. Its `files` pattern is root-anchored, so it does **not** cover `projects/dbt_transform`'s separate lock ([why it is separate](architecture.md#why-dbt_transform-is-not-a-workspace-member)) — a stale dbt lock is caught by that component's `--frozen` Cloud Build steps instead |
 | `terraform_fmt` | `iac/**/*.tf` | Canonical HCL formatting |
 | `terraform_validate` | `iac/**` | Validates each module with `-backend=false`, so it never touches or locks state |
 
