@@ -1,0 +1,35 @@
+name: 'dbt_transform'
+version: '1.0.0'
+config-version: 2
+
+profile: 'dbt_transform'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Staleness ceiling for days_since_last_successful_payment. The column is anchored to
+# CURRENT_DATE(), so uncapped it grows by 1 every day for any customer without a new
+# successful payment and drifts against a frozen baseline forever. Past this horizon
+# "stale" carries no further churn signal, so collapsing the tail costs nothing and
+# makes the feature stationary. Changing it changes feature semantics: retrain after.
+vars:
+  payment_recency_cap_days: 30
+  # Horizon for the columns that would otherwise be lifetime accumulators
+  # (total_payment_attempts, renewal_count). raw.activity_cdc only ever grows, so a
+  # lifetime count encodes the dataset's age as much as the customer's behaviour and
+  # drifts against any frozen baseline forever. Matches the 90d rolling windows already
+  # used by events_last_90d and the rate columns. Changing it needs a retrain.
+  activity_window_days: 90
+
+models:
+  dbt_transform:
+    staging:
+      +materialized: ephemeral
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table

@@ -1,0 +1,483 @@
+"""Unit tests for the drift detection orchestration stage (no GCP credentials required)."""
+
+import drift_monitor.detect as detect_module
+import numpy as np
+import pandas as pd
+from drift_monitor.config import DriftMonitorSettings
+from drift_monitor.detect import run_drift_check
+from ml_common.drift import compute_baseline_stats
+
+_DISPLAY_NAME = "daily-churn-scoring"
+
+
+def _settings(**overrides) -> DriftMonitorSettings:
+    """The deployed job's settings, constructed directly so no environment is needed."""
+    return DriftMonitorSettings(
+        project_id="proj",
+        region="europe-west1",
+        bq_features_table="features.customer_features",
+        model_display_name="churn-predictor",
+        gcs_bucket="pipeline-metadata",
+        decision_blob="drift/latest.json",
+        batch_predict_display_name=_DISPLAY_NAME,
+        **overrides,
+    )
+
+
+class _FakeChampion:
+    def __init__(
+        self, resource_name="projects/p/locations/l/models/123", uri="gs://bucket/artifacts/abc"
+    ):
+        self.resource_name = resource_name
+        self.uri = uri
+
+
+def _baseline_df() -> pd.DataFrame:
+    rng = np.random.RandomState(42)
+    return pd.DataFrame({"avg_transaction_30d": rng.normal(50, 10, 500)})
+
+
+def _run(
+    monkeypatch,
+    metadata,
+    feature_df,
+    fetch_predictions=None,
+    prior_breaches=None,
+    prior_breach_counts=None,
+    quality_context=None,
+):
+    """Drive run_drift_check with every GCP boundary stubbed.
+
+    prior_breach_counts/quality_context take a callable so a test can install a raising stub;
+    passing them through here rather than letting a test monkeypatch the module directly
+    keeps this helper from overwriting the stub the test just set.
+    """
+    monkeypatch.setattr(detect_module.aiplatform, "init", lambda **kwargs: None)
+    monkeypatch.setattr(detect_module, "fetch_champion", lambda model_display_name: _FakeChampion())
+    # threshold is required of every real artifact; defaulted here so each test's metadata
+    # literal only has to carry the fields that test is actually about.
+    monkeypatch.setattr(detect_module, "download_json", lambda uri: {"threshold": 0.5, **metadata})
+    monkeypatch.setattr(
+        detect_module,
+        "fetch_latest_snapshot",
+        lambda project_id, table: ("2026-06-18", feature_df),
+    )
+    if fetch_predictions is not None:
+        monkeypatch.setattr(detect_module, "fetch_latest_predictions", fetch_predictions)
+    monkeypatch.setattr(
+        detect_module,
+        "prior_breach_counts",
+        prior_breach_counts or (lambda *a, **kw: dict(prior_breaches or {})),
+    )
+    monkeypatch.setattr(detect_module, "record_run", lambda *args: None)
+    monkeypatch.setattr(
+        detect_module, "fetch_quality_context", quality_context or (lambda *a, **kw: ([], 0))
+    )
+    uploaded = {}
+    monkeypatch.setattr(
+        detect_module, "upload_decision", lambda uri, obj: uploaded.update(uri=uri, obj=obj)
+    )
+
+    return run_drift_check(_settings()), uploaded
+
+
+def test_run_drift_check_returns_no_champion_reason_when_none_registered(monkeypatch):
+    monkeypatch.setattr(detect_module.aiplatform, "init", lambda **kwargs: None)
+    monkeypatch.setattr(detect_module, "fetch_champion", lambda model_display_name: None)
+
+    uploaded = {}
+    monkeypatch.setattr(
+        detect_module, "upload_decision", lambda uri, obj: uploaded.update(uri=uri, obj=obj)
+    )
+
+    result = run_drift_check(_settings())
+
+    assert result.drift_detected is False
+    assert result.reason == "no_champion_registered"
+    assert uploaded["uri"] == "gs://proj-pipeline-metadata/drift/latest.json"
+    assert uploaded["obj"] == result
+
+
+def test_run_drift_check_reports_no_drift_when_distribution_stable(monkeypatch):
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+
+    result, uploaded = _run(
+        monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: None
+    )
+
+    assert result.drift_detected is False
+    assert result.champion_model == "projects/p/locations/l/models/123"
+    assert result.snapshot_date == "2026-06-18"
+    assert uploaded["obj"] == result
+
+
+def test_run_drift_check_reports_drift_when_distribution_shifts(monkeypatch):
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    shifted_df = baseline_df.copy()
+    shifted_df["avg_transaction_30d"] = shifted_df["avg_transaction_30d"] + 100
+
+    # Second consecutive breach: the persistence rule is satisfied, so this one retrains.
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted_df,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={"avg_transaction_30d": 1},
+    )
+
+    assert result.drift_detected is True
+    assert "avg_transaction_30d" in result.breached_features
+    assert "avg_transaction_30d" in result.persistent_breaches
+
+
+def test_run_drift_check_adds_score_psi_without_affecting_drift_detected(monkeypatch):
+    baseline_df = _baseline_df()
+    rng = np.random.RandomState(7)
+    train_scores = pd.DataFrame({"churn_probability": rng.uniform(0, 1, 500)})
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": {
+            **compute_baseline_stats(baseline_df),
+            **compute_baseline_stats(train_scores),
+        },
+    }
+    # Same distribution as the baseline -> stable, but present as its own field.
+    stable_scores = pd.DataFrame({"churn_probability": rng.uniform(0, 1, 500)})
+
+    result, _ = _run(
+        monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: stable_scores
+    )
+
+    assert result.drift_detected is False
+    assert result.score_psi is not None
+    assert result.score_drift_detected is False
+
+
+def test_run_drift_check_flags_score_drift_when_scores_shift(monkeypatch):
+    baseline_df = _baseline_df()
+    rng = np.random.RandomState(7)
+    train_scores = pd.DataFrame({"churn_probability": rng.uniform(0, 0.3, 500)})
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": {
+            **compute_baseline_stats(baseline_df),
+            **compute_baseline_stats(train_scores),
+        },
+    }
+    shifted_scores = pd.DataFrame({"churn_probability": rng.uniform(0.7, 1.0, 500)})
+
+    result, _ = _run(
+        monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: shifted_scores
+    )
+
+    # Score drift never flips the feature-only drift_detected flag that gates retraining.
+    assert result.drift_detected is False
+    assert result.score_drift_detected is True
+
+
+def test_run_drift_check_skips_score_check_when_predictions_unavailable(monkeypatch):
+    baseline_df = _baseline_df()
+    train_scores = pd.DataFrame({"churn_probability": np.random.RandomState(1).uniform(0, 1, 200)})
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": {
+            **compute_baseline_stats(baseline_df),
+            **compute_baseline_stats(train_scores),
+        },
+    }
+
+    result, _ = _run(monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: None)
+
+    assert result.score_psi is None
+    assert result.score_drift_detected is None
+
+
+def test_run_drift_check_skips_score_check_on_empty_predictions(monkeypatch):
+    baseline_df = _baseline_df()
+    train_scores = pd.DataFrame({"churn_probability": np.random.RandomState(1).uniform(0, 1, 200)})
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": {
+            **compute_baseline_stats(baseline_df),
+            **compute_baseline_stats(train_scores),
+        },
+    }
+    empty = pd.DataFrame({"churn_probability": []})
+
+    result, _ = _run(monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: empty)
+
+    assert result.score_psi is None
+
+
+def test_run_drift_check_survives_score_fetch_exception(monkeypatch):
+    baseline_df = _baseline_df()
+    train_scores = pd.DataFrame({"churn_probability": np.random.RandomState(1).uniform(0, 1, 200)})
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": {
+            **compute_baseline_stats(baseline_df),
+            **compute_baseline_stats(train_scores),
+        },
+    }
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("BigQuery permission denied")
+
+    result, uploaded = _run(monkeypatch, metadata, baseline_df, fetch_predictions=_boom)
+
+    assert result.drift_detected is False
+    assert result.score_psi is None
+    assert uploaded["obj"] == result
+
+
+def test_run_drift_check_survives_compute_psi_failure_after_successful_fetch(monkeypatch):
+    # fetch_latest_predictions succeeds but returns data compute_psi can't digest (e.g. a
+    # non-numeric value slipping through) — the try/except must cover this too, not just the
+    # fetch call, or a downstream failure here would take the feature-PSI result down with it.
+    baseline_df = _baseline_df()
+    train_scores = pd.DataFrame({"churn_probability": np.random.RandomState(1).uniform(0, 1, 200)})
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": {
+            **compute_baseline_stats(baseline_df),
+            **compute_baseline_stats(train_scores),
+        },
+    }
+    unusable_scores = pd.DataFrame({"churn_probability": ["not-a-number", "also-not-a-number"]})
+
+    result, uploaded = _run(
+        monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: unusable_scores
+    )
+
+    assert result.drift_detected is False
+    assert result.score_psi is None
+    assert uploaded["obj"] == result
+
+
+def test_run_drift_check_skips_score_check_when_scores_are_all_null(monkeypatch):
+    baseline_df = _baseline_df()
+    train_scores = pd.DataFrame({"churn_probability": np.random.RandomState(1).uniform(0, 1, 200)})
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": {
+            **compute_baseline_stats(baseline_df),
+            **compute_baseline_stats(train_scores),
+        },
+    }
+    # Rows present, but no usable score in any of them (e.g. a serving-side scoring defect) —
+    # must be skipped like the empty case, not scored as a spurious 100%-drifted distribution.
+    all_null_scores = pd.DataFrame({"churn_probability": [None, None, None]})
+
+    result, _ = _run(
+        monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: all_null_scores
+    )
+
+    assert result.score_psi is None
+    assert result.score_drift_detected is None
+
+
+def test_run_drift_check_skips_score_check_for_pre_change_artifacts(monkeypatch):
+    # metadata frozen by a model trained before the score-baseline was added: no
+    # churn_probability key at all. fetch_latest_predictions must not even be called.
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+
+    def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("fetch_latest_predictions should not be called")
+
+    result, _ = _run(monkeypatch, metadata, baseline_df, fetch_predictions=_should_not_be_called)
+
+    assert result.score_psi is None
+
+
+def test_first_breach_does_not_trigger_retraining(monkeypatch):
+    # The nightly-retrain failure mode: a feature breaching for the first time is recorded
+    # and alerted on, but must not submit a training pipeline until it repeats.
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    shifted_df = baseline_df.copy()
+    shifted_df["avg_transaction_30d"] = shifted_df["avg_transaction_30d"] + 100
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted_df,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={},
+    )
+
+    assert result.run_drift_detected is True
+    assert result.drift_detected is False
+    assert result.breach_counts == {"avg_transaction_30d": 1}
+    assert result.persistent_breaches == {}
+
+
+def test_unreadable_history_fails_safe_to_no_retraining(monkeypatch):
+    # An unreadable history table must not fall back to single-run triggering — that is
+    # exactly the behaviour the persistence rule exists to prevent.
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    shifted_df = baseline_df.copy()
+    shifted_df["avg_transaction_30d"] = shifted_df["avg_transaction_30d"] + 100
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("drift_metrics not found")
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted_df,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breach_counts=_boom,
+    )
+
+    assert result.run_drift_detected is True
+    assert result.drift_detected is False
+
+
+def test_history_write_failure_does_not_discard_the_decision(monkeypatch):
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("streaming insert failed")
+
+    monkeypatch.setattr(detect_module, "record_run", _boom)
+    result, uploaded = _run(
+        monkeypatch, metadata, baseline_df, fetch_predictions=lambda *a, **kw: None
+    )
+
+    assert result.drift_detected is False
+    assert uploaded["obj"] == result
+
+
+def test_data_quality_failure_suppresses_retraining(monkeypatch):
+    # Drift that is really a broken snapshot must not retrain: the challenger would be
+    # trained AND evaluated on the same corrupted data, so the promotion gate cannot catch it.
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    collapsed = baseline_df.copy()
+    collapsed["avg_transaction_30d"] = 1.0  # upstream default written into every row
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        collapsed,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={"avg_transaction_30d": 5},
+    )
+
+    assert result.run_drift_detected is True
+    assert result.drift_detected is False
+    assert result.retrain_suppressed_by_data_quality is True
+    assert result.data_quality.data_quality_failed is True
+    assert "collapsed_column" in {f.check for f in result.data_quality.failures}
+
+
+def test_healthy_snapshot_leaves_the_drift_verdict_alone(monkeypatch):
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    shifted = baseline_df.copy()
+    shifted["avg_transaction_30d"] = shifted["avg_transaction_30d"] + 100
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={"avg_transaction_30d": 1},
+    )
+
+    assert result.data_quality.data_quality_failed is False
+    assert result.drift_detected is True
+    assert result.retrain_suppressed_by_data_quality is None
+
+
+def test_data_quality_check_failure_fails_closed(monkeypatch):
+    # The one check that fails closed: if we cannot verify the snapshot, we do not retrain.
+    baseline_df = _baseline_df()
+    metadata = {
+        "feature_names": ["avg_transaction_30d"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    shifted = baseline_df.copy()
+    shifted["avg_transaction_30d"] = shifted["avg_transaction_30d"] + 100
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("BigQuery unavailable")
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        shifted,
+        fetch_predictions=lambda *a, **kw: None,
+        prior_breaches={"avg_transaction_30d": 1},
+        quality_context=_boom,
+    )
+
+    assert result.drift_detected is False
+    assert result.data_quality.data_quality_failed is True
+
+
+def test_a_mart_that_stopped_emitting_a_feature_fails_the_missing_column_assertion(monkeypatch):
+    """The snapshot's own columns gate this, not the reindexed frame's.
+
+    run_drift_check reindexes the snapshot onto the champion's frozen feature names before
+    the quality gate sees it, which materialises every expected column as all-NaN. Judged on
+    that frame the missing-column assertion can never fail, and a dropped mart column was
+    only ever reported as a null-rate breach.
+    """
+    baseline_df = pd.DataFrame(
+        {
+            "avg_transaction_30d": np.random.RandomState(42).normal(50, 10, 500),
+            "renewal_count": np.random.RandomState(7).randint(0, 5, 500),
+        }
+    )
+    metadata = {
+        "feature_names": ["avg_transaction_30d", "renewal_count"],
+        "baseline_stats": compute_baseline_stats(baseline_df),
+    }
+    # The mart no longer emits renewal_count at all.
+    snapshot_without_renewals = baseline_df.drop(columns=["renewal_count"])
+
+    result, _ = _run(
+        monkeypatch,
+        metadata,
+        snapshot_without_renewals,
+        fetch_predictions=lambda *a, **kw: None,
+        quality_context=lambda *a, **kw: ([500, 500], 0),
+    )
+
+    assert result.data_quality is not None
+    assert result.data_quality.data_quality_failed is True
+    failures = {failure.check: failure.detail for failure in result.data_quality.failures}
+    assert "missing_columns" in failures, failures
+    assert "renewal_count" in failures["missing_columns"]
+    # And the gate still does its job: a broken snapshot never triggers a retrain.
+    assert result.drift_detected is False

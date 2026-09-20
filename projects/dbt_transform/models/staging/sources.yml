@@ -1,0 +1,20 @@
+version: 2
+
+sources:
+  - name: raw
+    database: "{{ env_var('BQ_PROJECT_ID') }}"
+    schema: raw
+    tables:
+      - name: activity_cdc
+        description: "Append-only synthetic CDC event log for customer lapse simulation."
+
+  # ml.predictions is written by the Vertex AI BatchPredictionJob sync step in the
+  # orchestrator workflow, not by dbt — declared as a source so the dashboard marts can
+  # ref() it and so it shows up as an upstream node in the lineage graph rather than as a
+  # hardcoded table name. dbt never builds or tests it.
+  - name: ml
+    database: "{{ env_var('BQ_PROJECT_ID') }}"
+    schema: ml
+    tables:
+      - name: predictions
+        description: "Batch churn predictions scored against the champion model, one row per customer per snapshot_date."

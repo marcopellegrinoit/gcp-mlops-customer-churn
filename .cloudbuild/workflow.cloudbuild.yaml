@@ -1,0 +1,17 @@
+steps:
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - workflows
+      - deploy
+      - orchestrator-workflow
+      - --source=workflows/orchestrator-workflow.yaml
+      - --location=${_REGION}
+      - --project=$PROJECT_ID
+
+substitutions:
+  _REGION: europe-west1
+
+options:
+  logging: CLOUD_LOGGING_ONLY

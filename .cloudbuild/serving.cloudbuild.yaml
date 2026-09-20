@@ -1,0 +1,102 @@
+steps:
+  - id: lint
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        uvx ruff@${_RUFF_VERSION} check projects/serving
+        uvx ruff@${_RUFF_VERSION} format --check projects/serving
+
+  - id: test
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/serving
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+      - -m
+      - "not integration"
+
+  # Requires Docker: Cloud Build mounts /var/run/docker.sock into every step, so
+  # testcontainers can start a sibling fake-gcs-server container against the host daemon.
+  - id: integration-test
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/serving
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+      - -m
+      - integration
+
+  - id: audit
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/serving
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - --with
+      - pip-audit
+      - pip-audit
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --build-arg=UV_VERSION=${_UV_VERSION}
+      - --build-arg=PYTHON_VERSION=${_PYTHON_VERSION}
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/serving:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/serving:latest
+      - -f
+      - projects/serving/Dockerfile
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/serving
+
+  - id: trigger-pipeline-compile
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - builds
+      - triggers
+      - run
+      - training-pipeline-trigger
+      - --branch=$BRANCH_NAME
+      - --region=${_REGION}
+
+substitutions:
+  _REGION: europe-west1
+  _UV_VERSION: "0.11.19"
+  _PYTHON_VERSION: "3.13"
+  # Pinned to the same rev as the ruff-pre-commit hook in .pre-commit-config.yaml, so a
+  # manual `pre-commit run` and this CI gate never disagree about what's a lint failure.
+  _RUFF_VERSION: "0.16.3"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

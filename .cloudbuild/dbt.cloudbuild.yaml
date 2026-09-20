@@ -1,0 +1,71 @@
+steps:
+  - id: validate
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/dbt_transform
+    env:
+      - UV_LINK_MODE=copy
+      - BQ_PROJECT_ID=dummy-project
+    args:
+      - run
+      - --frozen
+      - dbt
+      - parse
+      - --profiles-dir
+      - .
+
+  - id: audit
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/dbt_transform
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --with
+      - pip-audit
+      - pip-audit
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --build-arg=UV_VERSION=${_UV_VERSION}
+      - --build-arg=PYTHON_VERSION=${_PYTHON_VERSION}
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/dbt:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/dbt:latest
+      - -f
+      - projects/dbt_transform/Dockerfile
+      - projects/dbt_transform
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/dbt
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - dbt-job
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/dbt:$SHORT_SHA
+      - --region=${_REGION}
+      - --project=$PROJECT_ID
+
+substitutions:
+  _REGION: europe-west1
+  _UV_VERSION: "0.11.19"
+  _PYTHON_VERSION: "3.13"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

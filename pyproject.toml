@@ -1,0 +1,96 @@
+[tool.uv.workspace]
+members = [
+    "projects/obs_common",
+    "projects/data_contracts",
+    "projects/ml_common",
+    "projects/data_generator",
+    "projects/modeling",
+    "projects/trainer",
+    "projects/serving",
+    "projects/post_training",
+    "projects/training_pipeline",
+    "projects/drift_monitor",
+    "projects/dashboard",
+]
+
+[tool.uv]
+# Targets: Linux (Cloud Run / Docker) and macOS arm64 (Apple Silicon dev machines).
+# macOS x86_64 is excluded: shap's numba<0.63 cap there conflicts with numpy>=2.4.
+environments = [
+    "sys_platform == 'linux'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+# numba 0.53.1 (the version shap pulls without a floor) only supports Python <3.10.
+# numba>=0.61 is the first release that supports Python 3.13 (the Docker base image).
+#
+# The floors below are not ordinary dependency decisions: they pin transitive packages past
+# versions flagged by GitHub Dependabot alerts on this repo. Each is the first patched release.
+# cryptography: GHSA-g6cj-pr64-35w5 (PKCS#7 Bleichenbacher oracle)
+# pyasn1: GHSA-m4p7-r5rc-7g4j, GHSA-hm4w-wwcw-mr6r, GHSA-8ppf-4f7h-5ppj (DoS via decoder)
+# pydantic-settings: GHSA-4xgf-cpjx-pc3j (symlink traversal in NestedSecretsSettingsSource)
+constraint-dependencies = [
+    "numba>=0.61",
+    "cryptography>=50.0.0",
+    "pyasn1>=0.6.4",
+    "pydantic-settings>=2.14.2",
+]
+
+# Running `pytest` from the repo root exercises every package's suite at once, which is what
+# a local pre-push check wants; Cloud Build still runs each package on its own, from its own
+# directory, against its own [tool.pytest.ini_options].
+#
+# importlib import mode is what makes the root run possible. Under the default "prepend" mode
+# pytest derives a module name from the file's location relative to the first ancestor without
+# an __init__.py, so eleven packages each holding tests/test_config.py all resolve to the same
+# `tests.test_config` and collection dies on the collision. (The empty tests/__init__.py files
+# that forced that were removed with this.) importlib gives each file a name derived from its
+# full path instead, so same-named modules in different packages coexist.
+[tool.pytest.ini_options]
+testpaths = ["projects"]
+addopts = "--import-mode=importlib"
+# Declared here as well as per-package: a root run collects the integration-marked tests from
+# every package, and an unregistered mark is a warning at best and an error under -W error.
+markers = [
+    "integration: tests requiring Docker or live GCP services (deselect with -m 'not integration')",
+]
+
+# Ruff config lives only here: no sub-package declares a [tool.ruff] table, so ruff resolves
+# every file in the workspace against this one. Keeps lint/format rules identical across packages.
+[tool.ruff]
+line-length = 100
+# Floor of every package's requires-python, so no rule assumes a syntax the oldest target lacks.
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "F",   # pyflakes — unused imports/variables, undefined names
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "I",   # isort — import ordering
+    "UP",  # pyupgrade — modern syntax for the target version
+    "B",   # flake8-bugbear — likely bugs
+    "SIM", # flake8-simplify
+    "D",   # pydocstyle — enforces the docstring rules in CLAUDE.md
+    "RUF", # ruff-specific
+]
+ignore = [
+    "D203", # incompatible with D211 (blank line before class docstring)
+    "D213", # incompatible with D212 (multi-line summary on the second line)
+]
+# "5000 rows × 21 columns" and "tier × channel" are deliberate typography, not typos for "x".
+allowed-confusables = ["×"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+# Notebooks are linted but never reformatted: cell-level formatting churn produces unreadable
+# diffs for exploratory work. Set here rather than in .pre-commit-config.yaml so a manual
+# `ruff format` behaves identically to the hook.
+exclude = ["notebooks/**"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test names are the documentation; a docstring on every test adds noise, not information.
+"**/tests/**" = ["D1"]
+# Exploratory notebooks: cells are scratch work, not a documented public API.
+"notebooks/**" = ["D", "E501"]

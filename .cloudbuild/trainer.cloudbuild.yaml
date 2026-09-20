@@ -1,0 +1,199 @@
+steps:
+  - id: lint
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        uvx ruff@${_RUFF_VERSION} check projects/obs_common projects/data_contracts projects/ml_common projects/modeling projects/trainer
+        uvx ruff@${_RUFF_VERSION} format --check projects/obs_common projects/data_contracts projects/ml_common projects/modeling projects/trainer
+
+  # obs-common is tested here for the same reason as data-contracts below: it is installed
+  # into every deployable, and five triggers carry it, so testing it once on the build that
+  # already lints it beats running the same suite five times. It had no lint or test step in
+  # any build at all — every image depended on it and nothing ran its suite. No pip-audit
+  # step: the package is deliberately stdlib-only and has no dependencies to audit.
+  - id: test-obs-common
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/obs_common
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+
+  # data-contracts is tested here rather than in its own build because every trigger that
+  # carries it (trainer, serving, post-training, drift-monitor, dashboard) would otherwise
+  # run the same suite five times over. No pip-audit step: the package's only dependency is
+  # pydantic, resolved from the same lockfile the audit below already covers.
+  - id: test-data-contracts
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/data_contracts
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+
+  - id: test-ml-common
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/ml_common
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+      - -m
+      - "not integration"
+
+  - id: audit-ml-common
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/ml_common
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - --with
+      - pip-audit
+      - pip-audit
+
+  - id: test
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/modeling
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+
+  - id: audit-modeling
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/modeling
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - --with
+      - pip-audit
+      - pip-audit
+
+  - id: test-trainer
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/trainer
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+      - -m
+      - "not integration"
+
+  # Requires Docker: Cloud Build mounts /var/run/docker.sock into every step, so
+  # testcontainers can start a sibling fake-gcs-server container against the host daemon.
+  # Only data.py's GCS helpers are covered here — export_snapshot()/read_split() both touch
+  # the ml.split_assignments table, and the local BigQuery emulator crashes (internal WASM
+  # panic, verified through 0.8.1) on any table operation in a dataset literally named "ml".
+  # No viable local-emulator target for that half; it stays covered by unit-level mocks only.
+  - id: integration-test-trainer
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/trainer
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+      - -m
+      - integration
+
+  - id: audit-trainer
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/trainer
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - --with
+      - pip-audit
+      - pip-audit
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --build-arg=UV_VERSION=${_UV_VERSION}
+      - --build-arg=PYTHON_VERSION=${_PYTHON_VERSION}
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/trainer:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/trainer:latest
+      - -f
+      - projects/trainer/Dockerfile
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/trainer
+
+  - id: trigger-pipeline-compile
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - builds
+      - triggers
+      - run
+      - training-pipeline-trigger
+      - --branch=$BRANCH_NAME
+      - --region=${_REGION}
+
+substitutions:
+  _REGION: europe-west1
+  _UV_VERSION: "0.11.19"
+  _PYTHON_VERSION: "3.13"
+  # Pinned to the same rev as the ruff-pre-commit hook in .pre-commit-config.yaml, so a
+  # manual `pre-commit run` and this CI gate never disagree about what's a lint failure.
+  _RUFF_VERSION: "0.16.3"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

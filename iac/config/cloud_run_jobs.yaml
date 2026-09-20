@@ -1,0 +1,109 @@
+cloud_run_jobs:
+  dbt-job:
+    description: "dbt feature engineering transformation job"
+    ar_repository: "containers"
+    image_name: "dbt"
+    image_tag: "latest"
+    cpu: "1"
+    memory: "1Gi"
+    timeout: "1200s"
+    max_retries: 1
+    env_vars:
+      BQ_LOCATION: "europe-west1"
+    bq_dataset_roles:
+      raw: "roles/bigquery.dataViewer"
+      features: "roles/bigquery.dataEditor"
+      # churn_risk_current/churn_risk_daily are views over ml.predictions joined against
+      # customer_features, so dbt reads the ml dataset as well as writing features. Read-only:
+      # dbt owns nothing in ml — the orchestrator's MERGE is what populates predictions.
+      ml: "roles/bigquery.dataViewer"
+    service_account_project_roles:
+      - "roles/bigquery.jobUser"
+
+  data-gen-job:
+    description: "Synthetic CDC data generation job"
+    ar_repository: "containers"
+    image_name: "data-gen"
+    image_tag: "latest"
+    cpu: "1"
+    memory: "512Mi"
+    timeout: "600s"
+    max_retries: 1
+    env_vars:
+      BQ_DATASET_ID: "raw"
+      BQ_TABLE_ID: "activity_cdc"
+      # New customers acquired per elapsed day since the generator's pool epoch. Customer
+      # identities are otherwise stable across runs, so without acquisition the base only
+      # shrinks as customers churn and its tenure distribution climbs without bound.
+      DAILY_ACQUISITIONS: "25"
+      # Events emitted per run, and the size of the founding customer base acquired on the
+      # pool epoch. Together they set the scale of the simulation.
+      BATCH_SIZE: "2000"
+      USER_POOL_SIZE: "10000"
+      # Fraction of events given deliberately out-of-range values (negative transactions,
+      # engagement scores above 1, absurd payment-attempt counts). Zero in steady state;
+      # raise it to drill the drift monitor and the data-quality gate against a known
+      # corruption, then set it back.
+      ANOMALY_RATE: "0.0"
+    bq_dataset_roles:
+      # dataEditor covers both the event insert and the read-back of already-churned
+      # customers, which is what makes churn an absorbing state across runs.
+      raw: "roles/bigquery.dataEditor"
+    service_account_project_roles:
+      - "roles/bigquery.jobUser"
+
+  drift-monitor-job:
+    description: "PSI drift check of the latest feature snapshot against the champion's training baseline"
+    ar_repository: "containers"
+    image_name: "drift-monitor"
+    image_tag: "latest"
+    cpu: "1"
+    memory: "512Mi"
+    timeout: "600s"
+    max_retries: 1
+    env_vars:
+      REGION: "europe-west1"
+      BQ_FEATURES_TABLE: "features.customer_features"
+      MODEL_DISPLAY_NAME: "churn-predictor"
+      GCS_BUCKET: "pipeline-metadata"
+      DECISION_BLOB: "drift/latest.json"
+      # Must match submit_batch_predict's displayName in workflows/orchestrator-workflow.yaml —
+      # disambiguates the daily production-scoring job from post-training's own evaluation-time
+      # batch prediction runs against the same champion model.
+      BATCH_PREDICT_DISPLAY_NAME: "daily-churn-scoring"
+      # Effect size the business considers a meaningful distribution shift. A feature must
+      # clear this *and* the bootstrapped sampling-noise floor for the snapshot's size
+      # before it counts as breached, so raising it tightens the gate without affecting how
+      # small-sample noise is handled.
+      PSI_THRESHOLD: "0.2"
+      # Persistence rule: a feature must breach in at least PERSISTENCE_MIN_BREACHES of the
+      # last PERSISTENCE_WINDOW runs before retraining is triggered. A single night's breach
+      # is not evidence of a distribution shift, and acting on one is what turns a noisy
+      # detector into a nightly retrain loop.
+      PERSISTENCE_WINDOW: "3"
+      PERSISTENCE_MIN_BREACHES: "2"
+      # Data-quality gate: preceding feature-table partitions the row-volume assertion
+      # compares this snapshot against before allowing a retrain decision to stand.
+      QUALITY_HISTORY_PARTITIONS: "7"
+      # The two tolerances those assertions apply, read by ml_common.data_quality.
+      # A snapshot below this fraction of the recent median row count is an incomplete load
+      # rather than a population shift, and is never retrained on.
+      ML_MIN_ROW_RATIO: "0.5"
+      # Percentage-point rise in a feature's null rate over its training baseline that reads
+      # as a broken join. Generous on purpose: genuine missingness does move, and the
+      # failures worth catching are the ones that jump to near-total.
+      ML_MAX_NULL_RATE_INCREASE: "0.25"
+    bq_dataset_roles:
+      features: "roles/bigquery.dataViewer"
+      # dataEditor, not dataViewer: the job appends each run's per-feature PSI to
+      # ml.drift_metrics, which is the history the persistence rule reads back.
+      ml: "roles/bigquery.dataEditor"
+    gcs_bucket_roles:
+      pipeline-metadata: "roles/storage.objectAdmin"
+      training-data: "roles/storage.objectViewer"
+    service_account_project_roles:
+      - "roles/bigquery.jobUser"
+      # Lets to_dataframe() open a BigQuery Storage read session instead of paging the
+      # feature snapshot and the champion's scores back over the REST endpoint.
+      - "roles/bigquery.readSessionUser"
+      - "roles/aiplatform.user"

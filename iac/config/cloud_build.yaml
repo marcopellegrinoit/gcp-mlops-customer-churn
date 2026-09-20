@@ -1,0 +1,11 @@
+cloud_build:
+  github:
+    owner: "marcopellegrinoit"
+    repo: "gcp-mlops-customer-churn"
+    connection_name: "customer-churn-connection"
+  default_sa_roles:
+    - roles/artifactregistry.writer
+    - roles/run.developer
+    - roles/logging.logWriter
+    - roles/workflows.editor
+    - roles/cloudbuild.builds.editor

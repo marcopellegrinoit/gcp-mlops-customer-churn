@@ -1,0 +1,84 @@
+steps:
+  - id: lint
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        uvx ruff@${_RUFF_VERSION} check projects/drift_monitor
+        uvx ruff@${_RUFF_VERSION} format --check projects/drift_monitor
+
+  - id: test
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/drift_monitor
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - pytest
+
+  - id: audit
+    name: ghcr.io/astral-sh/uv:${_UV_VERSION}-python${_PYTHON_VERSION}-trixie-slim
+    entrypoint: uv
+    dir: projects/drift_monitor
+    env:
+      - UV_LINK_MODE=copy
+    args:
+      - run
+      - --frozen
+      - --extra
+      - dev
+      - --with
+      - pip-audit
+      - pip-audit
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --build-arg=UV_VERSION=${_UV_VERSION}
+      - --build-arg=PYTHON_VERSION=${_PYTHON_VERSION}
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/drift-monitor:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/drift-monitor:latest
+      - -f
+      - projects/drift_monitor/Dockerfile
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/drift-monitor
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - drift-monitor-job
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/containers/drift-monitor:$SHORT_SHA
+      - --region=${_REGION}
+      - --project=$PROJECT_ID
+
+substitutions:
+  _REGION: europe-west1
+  _UV_VERSION: "0.11.19"
+  _PYTHON_VERSION: "3.13"
+  # Pinned to the same rev as the ruff-pre-commit hook in .pre-commit-config.yaml, so a
+  # manual `pre-commit run` and this CI gate never disagree about what's a lint failure.
+  _RUFF_VERSION: "0.16.3"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

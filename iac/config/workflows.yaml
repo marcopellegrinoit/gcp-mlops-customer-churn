@@ -1,0 +1,15 @@
+workflows:
+  orchestrator-workflow:
+    description: "Daily orchestration: data gen → dbt transform → batch predict → drift monitor → (drift) retrain"
+    schedule: "0 2 * * *"
+    service_account_project_roles:
+      - "roles/run.developer"
+      - "roles/logging.logWriter"
+      - "roles/secretmanager.secretAccessor"
+      - "roles/aiplatform.user"
+      - "roles/bigquery.jobUser"
+    gcs_bucket_roles:
+      pipeline-metadata: "roles/storage.objectViewer"
+    bq_dataset_roles:
+      ml: "roles/bigquery.dataEditor"
+    act_as_vertex_pipeline_sa: true

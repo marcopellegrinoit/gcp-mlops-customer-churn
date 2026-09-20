@@ -1,0 +1,1209 @@
+# project_id, region, alert_email and alert_from_email come from Cloud
+# Scheduler's HTTP body rather than being hardcoded here. This lets the same
+# YAML run in any environment and also allows manual one-off executions with
+# different targets.
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project_id: ${args.project_id}
+          - region: ${args.region}
+          - alert_email: ${args.alert_email}
+          - alert_from_email: ${args.alert_from_email}
+          - alerts_enabled: ${args.alerts_enabled}
+          - model_display_name: "churn-predictor"
+          # Stage skips for manual test runs — absent from the Cloud Scheduler body,
+          # so map.get/default keeps the daily production run at "skip nothing".
+          - skip_data_gen: ${default(map.get(args, "skip_data_gen"), false)}
+          - skip_dbt: ${default(map.get(args, "skip_dbt"), false)}
+          - skip_batch_predict: ${default(map.get(args, "skip_batch_predict"), false)}
+
+    # Skipping data gen leaves the raw CDC tables untouched, which is the point when the
+    # run under test is drift monitoring or retraining against a snapshot you staged by
+    # hand: a fresh generation would overwrite the very distribution you're testing.
+    - maybe_skip_data_gen:
+        switch:
+          - condition: ${skip_data_gen}
+            next: maybe_skip_dbt
+        next: run_data_gen
+
+    - run_data_gen:
+        call: run_crj
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "data-gen-job"
+        result: data_gen_op
+
+    # The Cloud Run LRO proto only includes an "error" key when the job fails;
+    # a completed-successfully operation has no "error" field at all.
+    # Checking key presence is safer than comparing a status string.
+    - check_data_gen:
+        switch:
+          - condition: ${"error" in data_gen_op}
+            next: alert_data_gen_failure
+        next: maybe_skip_dbt
+
+    # Alerting is best-effort: a SendGrid/Secret Manager failure here must never
+    # mask or replace the real pipeline failure being reported below.
+    - alert_data_gen_failure:
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            job_name: "data-gen-job"
+            error: ${data_gen_op.error}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_data_gen_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: raise_data_gen
+
+    - raise_data_gen:
+        raise: ${data_gen_op.error}
+
+    # dbt rebuilds customer_features from whatever raw data is present, so it has to be
+    # skippable too: a snapshot hand-edited to carry synthetic drift survives a skipped
+    # data-gen but not a dbt run, which would recompute it straight back to normal.
+    - maybe_skip_dbt:
+        switch:
+          - condition: ${skip_dbt}
+            next: fetch_champion
+        next: run_dbt
+
+    # dbt only runs after data-gen succeeds — transforming stale or missing
+    # raw data would silently produce incorrect feature tables.
+    - run_dbt:
+        call: run_crj
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "dbt-job"
+        result: dbt_op
+
+    - check_dbt:
+        switch:
+          - condition: ${"error" in dbt_op}
+            next: alert_dbt_failure
+        next: fetch_champion
+
+    - alert_dbt_failure:
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            job_name: "dbt-job"
+            error: ${dbt_op.error}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_dbt_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: raise_dbt
+
+    - raise_dbt:
+        raise: ${dbt_op.error}
+
+    # Batch prediction and drift monitoring both need a registered champion to
+    # score/compare against. On the very first-ever run (no model trained yet)
+    # there's nothing to do downstream of dbt, so finish cleanly here.
+    - fetch_champion:
+        try:
+          call: http.get
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/models"}
+            auth:
+              type: OAuth2
+            query:
+              filter: ${"display_name=\"" + model_display_name + "\" AND labels.role=\"champion\""}
+              orderBy: "create_time desc"
+          result: champion_resp
+        retry: ${http.default_retry}
+
+    - check_champion_exists:
+        switch:
+          - condition: ${"models" in champion_resp.body and len(champion_resp.body.models) > 0}
+            next: maybe_skip_batch_predict
+        next: done
+
+    # Skipping batch predict skips the prediction sync with it — sync_predictions reads the
+    # scratch output table off the job resource this step would have produced. Drift monitoring
+    # still works: feature PSI never touches prediction output, and the score-distribution check
+    # falls back to the champion's most recent completed batch job, which is stale but valid
+    # (and degrades to "no score signal" on its own if there is none).
+    - maybe_skip_batch_predict:
+        switch:
+          - condition: ${skip_batch_predict}
+            next: run_drift_monitor
+        next: run_batch_predict
+
+    - run_batch_predict:
+        call: submit_batch_predict
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          champion_model: ${champion_resp.body.models[0].name}
+        result: batch_predict_job
+
+    # completionStats omits successfulCount entirely when it's zero (same omit-if-empty
+    # behavior as the rest of these APIs) — a job can report JOB_STATE_SUCCEEDED while every
+    # row failed to score (e.g. a serving-container bug), leaving no output table behind.
+    # Catching that here surfaces the real per-row error instead of crashing downstream in
+    # run_sync_predictions with an opaque "table not found" BigQuery error.
+    - check_batch_predict:
+        switch:
+          - condition: ${batch_predict_job.state == "JOB_STATE_FAILED" or batch_predict_job.state == "JOB_STATE_CANCELLED"}
+            next: alert_batch_predict_failure
+          - condition: ${map.get(batch_predict_job, ["completionStats", "successfulCount"]) == null}
+            next: alert_batch_predict_failure
+        next: run_sync_predictions
+
+    - alert_batch_predict_failure:
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            job_name: "batch-predict-job"
+            error: ${batch_predict_job}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_batch_predict_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: raise_batch_predict
+
+    - raise_batch_predict:
+        raise: ${batch_predict_job}
+
+    # Reconciles the batch-predict job's unmanaged, auto-named scratch output table
+    # (bigqueryOutputDataset/bigqueryOutputTable on the job resource) into the clean,
+    # fixed ml.predictions schema — see sync_predictions_to_ml_predictions below.
+    - run_sync_predictions:
+        call: sync_predictions_to_ml_predictions
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          champion_model: ${champion_resp.body.models[0].name}
+          batch_predict_job: ${batch_predict_job}
+        result: sync_predictions_job
+
+    # BigQuery Job resources only populate status.errorResult on failure — same
+    # key-presence check already used for the Cloud Run Job ops above.
+    - check_sync_predictions:
+        switch:
+          - condition: ${"errorResult" in sync_predictions_job.status}
+            next: alert_sync_predictions_failure
+        next: run_drift_monitor
+
+    - alert_sync_predictions_failure:
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            job_name: "sync-predictions"
+            error: ${sync_predictions_job.status.errorResult}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_sync_predictions_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: raise_sync_predictions
+
+    - raise_sync_predictions:
+        raise: ${sync_predictions_job.status.errorResult}
+
+    # Drift monitoring scores the latest feature snapshot against the champion's frozen
+    # training baseline. Feature-PSI itself is independent of batch prediction's own output;
+    # the score-distribution check it also runs is not — it reads the champion's most recent
+    # BatchPredictionJob output — which is why this still has to run after batch predict.
+    - run_drift_monitor:
+        call: run_crj
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_name: "drift-monitor-job"
+        result: drift_monitor_op
+
+    - check_drift_monitor:
+        switch:
+          - condition: ${"error" in drift_monitor_op}
+            next: alert_drift_monitor_failure
+        next: read_drift_decision
+
+    - alert_drift_monitor_failure:
+        try:
+          call: send_failure_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            job_name: "drift-monitor-job"
+            error: ${drift_monitor_op.error}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_drift_monitor_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: raise_drift_monitor
+
+    - raise_drift_monitor:
+        raise: ${drift_monitor_op.error}
+
+    # The drift monitor job writes its decision to GCS rather than returning it
+    # directly — Cloud Run Job executions are fire-and-poll, with no return value
+    # channel back to the caller.
+    - read_drift_decision:
+        try:
+          call: http.get
+          args:
+            url: ${"https://storage.googleapis.com/storage/v1/b/" + project_id + "-pipeline-metadata/o/drift%2Flatest.json?alt=media"}
+            auth:
+              type: OAuth2
+          result: drift_decision
+        retry: ${http.default_retry}
+
+    # Data quality is checked before drift is acted on, because the two demand opposite
+    # responses. A defect — a short load, a broken join, a column collapsed to one value —
+    # moves distributions exactly as a real population shift does, but retraining on it
+    # bakes the defect into the model, and the promotion gate cannot catch that because the
+    # challenger is evaluated against a test split drawn from the same bad snapshot. The
+    # drift monitor has already forced drift_detected to false in this case; this branch is
+    # what makes sure a human hears about it rather than the night just looking quiet.
+    - check_data_quality:
+        switch:
+          - condition: ${default(map.get(drift_decision.body, ["data_quality", "data_quality_failed"]), false)}
+            next: alert_data_quality_failure
+        next: check_drift
+
+    - alert_data_quality_failure:
+        try:
+          call: send_data_quality_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            decision: ${drift_decision.body}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_data_quality_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: done
+
+    - check_drift:
+        switch:
+          - condition: ${drift_decision.body.drift_detected}
+            next: check_retrain_allowed
+          - condition: ${default(map.get(drift_decision.body, "score_drift_detected"), false)}
+            next: alert_score_drift_only
+        next: done
+
+    # Score drift is monitoring-only: it never submits a PipelineJob, but it still needs a
+    # human-visible signal — otherwise score_psi just sits unread in the decision JSON.
+    - alert_score_drift_only:
+        try:
+          call: send_drift_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            decision: ${drift_decision.body}
+            pipeline_job: null
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_score_drift_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: done
+
+    # Drift can persist across many days — a genuine shift the challenger keeps failing to
+    # beat, or an upstream defect no amount of retraining fixes. Submitting unconditionally
+    # then stacks a new PipelineJob every night on top of ones still running (training
+    # outlives this DAG, which is fire-and-forget), burning Vertex quota and racing the
+    # concurrent runs against each other over the same ml.split_assignments partition.
+    - check_retrain_allowed:
+        call: last_retrain_status
+        args:
+          project_id: ${project_id}
+          region: ${region}
+        result: retrain_status
+
+    - decide_retrain:
+        switch:
+          - condition: ${retrain_status.blocked}
+            next: alert_retrain_suppressed
+        next: trigger_training
+
+    # The drift still reaches a human even though nothing was submitted — otherwise a
+    # suppressed night is indistinguishable from a quiet one.
+    - alert_retrain_suppressed:
+        try:
+          call: send_drift_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            decision: ${drift_decision.body}
+            pipeline_job: null
+            suppressed_reason: ${retrain_status.reason}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_retrain_suppressed_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: done
+
+    - trigger_training:
+        call: submit_training_pipeline
+        args:
+          project_id: ${project_id}
+          region: ${region}
+        result: pipeline_job
+
+    - alert_drift_detected:
+        try:
+          call: send_drift_alert
+          args:
+            project_id: ${project_id}
+            to_email: ${alert_email}
+            from_email: ${alert_from_email}
+            alerts_enabled: ${alerts_enabled}
+            decision: ${drift_decision.body}
+            pipeline_job: ${pipeline_job}
+          result: _
+        except:
+          as: e
+          steps:
+            - ignore_drift_alert_error:
+                assign:
+                  - alert_send_failed: true
+        next: done
+
+    - done:
+        return: "Pipeline completed"
+
+
+# The Cloud Run Jobs v2 API is fully async: POST :run kicks off the execution
+# and immediately returns a google.longrunning.Operation handle — not the result.
+# This subworkflow wraps that into a synchronous call by blocking on poll_operation.
+run_crj:
+  params: [project_id, region, job_name]
+  steps:
+    - trigger:
+        try:
+          call: http.post
+          args:
+            url: ${"https://run.googleapis.com/v2/projects/" + project_id + "/locations/" + region + "/jobs/" + job_name + ":run"}
+            auth:
+              type: OAuth2
+          result: run_resp
+        retry: ${http.default_retry}
+
+    - poll:
+        call: poll_operation
+        args:
+          op_name: ${run_resp.body.name}
+        result: op
+
+    - return_op:
+        return: ${op}
+
+
+# Cloud Workflows has no built-in LRO waiter and no while loop primitive.
+# The loop is built by jumping back to the "check" label with "next: check" —
+# the switch falls through to sleep/get/update until done flips to true.
+poll_operation:
+  params: [op_name]
+  steps:
+    - init:
+        assign:
+          - op: {}
+          - done: false
+
+    - check:
+        switch:
+          - condition: ${done}
+            next: return_result
+
+    # 15 s balances responsiveness against API quota. Cloud Run jobs typically
+    # complete in 1–10 min, so we won't spin for long even at this interval.
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: 15
+
+    - get:
+        try:
+          call: http.get
+          args:
+            url: ${"https://run.googleapis.com/v2/" + op_name}
+            auth:
+              type: OAuth2
+          result: op_resp
+        retry: ${http.default_retry}
+
+    - update:
+        assign:
+          - op: ${op_resp.body}
+          - done: ${default(map.get(op_resp.body, "done"), false)}
+        next: check
+
+    - return_result:
+        return: ${op}
+
+
+# Vertex AI custom-container models carry no automatic resourcing, so
+# dedicatedResources is required even for a small daily scoring job.
+# bigqueryDestination must reference a dataset, not a specific table — Vertex
+# creates its own predictions_<timestamp> table under it; sync_predictions_to_ml_predictions
+# below reconciles that scratch table into the fixed ml.predictions schema.
+submit_batch_predict:
+  params: [project_id, region, champion_model, attempt: 0]
+  steps:
+    # Vertex's capacity error reads "Machine type temporarily unavailable, please deploy with
+    # a different machine type or retry", and capacity is tracked per machine type — so
+    # resubmitting the identical spec only ever takes the weaker half of that advice. On
+    # 2026-09-15 four identical n1-standard-4 submissions failed over thirteen minutes and took
+    # the nightly run down with them. Each attempt now steps to the next equally-sized type
+    # (4 vCPU / >=15 GB, all CPU series Vertex supports for prediction) and the list wraps, so
+    # the final attempt re-tries the first type after it has had ~12 minutes to recover.
+    - pick_machine_type:
+        assign:
+          - machine_types: ["n1-standard-4", "n2-standard-4", "e2-standard-4"]
+          - machine_type: ${machine_types[attempt % len(machine_types)]}
+
+    - submit:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/batchPredictionJobs"}
+            auth:
+              type: OAuth2
+            body:
+              displayName: "daily-churn-scoring"
+              model: ${champion_model}
+              inputConfig:
+                instancesFormat: "bigquery"
+                bigquerySource:
+                  # customer_features_current, not customer_features: bigquerySource takes a
+                  # table with no row filter, and the full mart retains ~90 daily partitions.
+                  # Scoring all of them nightly reproduced predictions for customer-days whose
+                  # features are immutable and whose decision window closed weeks ago, and the
+                  # MERGE downstream then restamped those historical rows' predicted_at and
+                  # model_version — so ml.predictions stopped describing what was actually
+                  # predicted when. See the dbt model for the full reasoning.
+                  inputUri: ${"bq://" + project_id + ".features.customer_features_current"}
+              # REQUIRED, not cosmetic. With a BigQuery source Vertex defaults to sending each
+              # row as a positional JSON *array*, with no column names. The serving container
+              # builds a DataFrame from the instances and reindexes it onto the training-time
+              # feature names (ml_common.preprocess.select_inference_features), so nameless
+              # instances match nothing, every feature becomes NaN, and XGBoost returns its
+              # all-missing constant for every customer — silently, with no row errors.
+              # That is exactly what happened: 244,435 rows scored 0.6214924454689026 apiece.
+              # "object" sends {column_name: value} per row, which is the contract the serving
+              # app and select_inference_features were always written against.
+              instanceConfig:
+                instanceType: "object"
+              outputConfig:
+                predictionsFormat: "bigquery"
+                bigqueryDestination:
+                  outputUri: ${"bq://" + project_id + ".ml"}
+              dedicatedResources:
+                machineSpec:
+                  machineType: ${machine_type}
+                startingReplicaCount: 1
+                maxReplicaCount: 1
+          result: submit_resp
+        retry: ${http.default_retry}
+
+    - poll:
+        call: poll_batch_prediction_job
+        args:
+          region: ${region}
+          job_name: ${submit_resp.body.name}
+        result: job
+
+    # The job can reach JOB_STATE_FAILED with a capacity error (same "Machine type
+    # temporarily unavailable" Vertex AI returns for the training pipeline's batch-test
+    # jobs) rather than any http-level failure, so http.default_retry above never sees it.
+    # Resubmit a bounded number of times — on the next machine type each round, see
+    # pick_machine_type — before giving up, so the daily run self-heals instead of paging
+    # on a transient condition.
+    - check_capacity_failure:
+        switch:
+          - condition: ${job.state == "JOB_STATE_FAILED" and text.match_regex(default(map.get(job, ["error", "message"]), ""), "(?i)temporarily unavailable") and attempt < 3}
+            next: backoff
+        next: return_job
+
+    - backoff:
+        call: sys.sleep
+        args:
+          seconds: 60
+        next: resubmit
+
+    - resubmit:
+        call: submit_batch_predict
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          champion_model: ${champion_model}
+          attempt: ${attempt + 1}
+        result: job
+        next: return_job
+
+    - return_job:
+        return: ${job}
+
+
+poll_batch_prediction_job:
+  params: [region, job_name]
+  steps:
+    - init:
+        assign:
+          - job: {}
+          - state: ""
+
+    - check:
+        switch:
+          - condition: ${state == "JOB_STATE_SUCCEEDED" or state == "JOB_STATE_FAILED" or state == "JOB_STATE_CANCELLED"}
+            next: return_result
+
+    # 30 s: batch prediction jobs provision dedicated resources and typically
+    # run for several minutes, so a slower poll than the Cloud Run Job loop
+    # is enough without burning API quota.
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: 30
+
+    - get:
+        try:
+          call: http.get
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/" + job_name}
+            auth:
+              type: OAuth2
+          result: job_resp
+        retry: ${http.default_retry}
+
+    - update:
+        assign:
+          - job: ${job_resp.body}
+          - state: ${job_resp.body.state}
+        next: check
+
+    - return_result:
+        return: ${job}
+
+
+# Copies the batch-predict job's unmanaged, auto-named scratch output table into the
+# fixed ml.predictions schema via a single BigQuery MERGE, keyed on (customer_id,
+# snapshot_date) — matching the table's clustering key and partition field. Keying the
+# merge this way makes a retried daily run idempotent: a rerun updates rows in place
+# instead of duplicating them, rather than a plain INSERT which would double-count.
+sync_predictions_to_ml_predictions:
+  params: [project_id, region, champion_model, batch_predict_job]
+  steps:
+    - build_scratch_table:
+        assign:
+          - scratch_dataset: ${text.replace_all(batch_predict_job.outputInfo.bigqueryOutputDataset, "bq://", "")}
+          - scratch_table: ${scratch_dataset + "." + batch_predict_job.outputInfo.bigqueryOutputTable}
+
+    # Workflows caps a single expression at 400 characters, so the MERGE statement is
+    # assembled across several assignments (each under the cap) and concatenated last.
+    - build_merge_query:
+        assign:
+          - merge_query_part1: >
+              ${"MERGE `" + project_id + ".ml.predictions` T " +
+              "USING (SELECT customer_id, " +
+              "CAST(JSON_VALUE(prediction, '$.churn_probability') AS FLOAT64) AS churn_probability, " +
+              "CAST(JSON_VALUE(prediction, '$.churn_prediction') AS BOOL) AS churn_prediction, snapshot_date " +
+              "FROM `" + scratch_table + "`) S " +
+              "ON T.customer_id = S.customer_id AND T.snapshot_date = S.snapshot_date "}
+          - merge_query_part2: >
+              ${"WHEN MATCHED THEN UPDATE SET churn_probability = S.churn_probability, " +
+              "churn_prediction = S.churn_prediction, model_version = @model_version, " +
+              "predicted_at = CURRENT_TIMESTAMP() "}
+          - merge_query_part3: >
+              ${"WHEN NOT MATCHED THEN INSERT (customer_id, churn_probability, churn_prediction, " +
+              "model_version, snapshot_date, predicted_at) VALUES (S.customer_id, S.churn_probability, " +
+              "S.churn_prediction, @model_version, S.snapshot_date, CURRENT_TIMESTAMP())"}
+          - merge_query: ${merge_query_part1 + merge_query_part2 + merge_query_part3}
+
+    # Confirmed against a real scratch table: for this custom-container model, the model's
+    # response lands in a "prediction" column as a JSON-encoded STRING (the raw predict
+    # response body), not a nested STRUCT — hence JSON_VALUE rather than dot-access above.
+    # customer_id/snapshot_date pass through as top-level columns, echoed from the
+    # bigquerySource input table.
+    - submit_merge:
+        try:
+          call: http.post
+          args:
+            url: ${"https://bigquery.googleapis.com/bigquery/v2/projects/" + project_id + "/jobs"}
+            auth:
+              type: OAuth2
+            body:
+              jobReference:
+                projectId: ${project_id}
+                location: ${region}
+              configuration:
+                query:
+                  useLegacySql: false
+                  parameterMode: "NAMED"
+                  queryParameters:
+                    - name: "model_version"
+                      parameterType:
+                        type: "STRING"
+                      parameterValue:
+                        value: ${champion_model}
+                  query: ${merge_query}
+          result: submit_resp
+        retry: ${http.default_retry}
+
+    - poll:
+        call: poll_bq_job
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          job_id: ${submit_resp.body.jobReference.jobId}
+        result: job
+
+    - return_job:
+        return: ${job}
+
+
+poll_bq_job:
+  params: [project_id, region, job_id]
+  steps:
+    - init:
+        assign:
+          - job: {}
+          - state: ""
+
+    - check:
+        switch:
+          - condition: ${state == "DONE"}
+            next: return_result
+
+    - sleep:
+        call: sys.sleep
+        args:
+          seconds: 5
+
+    - get:
+        try:
+          call: http.get
+          args:
+            url: ${"https://bigquery.googleapis.com/bigquery/v2/projects/" + project_id + "/jobs/" + job_id}
+            auth:
+              type: OAuth2
+            query:
+              location: ${region}
+          result: job_resp
+        retry: ${http.default_retry}
+
+    - update:
+        assign:
+          - job: ${job_resp.body}
+          - state: ${job_resp.body.status.state}
+        next: check
+
+    - return_result:
+        return: ${job}
+
+
+# Fire-and-forget: the training pipeline's own champion/challenger gate runs
+# asynchronously and can take much longer than this daily orchestrator should
+# block for, so the workflow submits the PipelineJob and moves on rather than
+# polling it to completion.
+submit_training_pipeline:
+  params: [project_id, region]
+  steps:
+    - build_uris:
+        assign:
+          - training_data_prefix: ${"gs://" + project_id + "-training-data/prod"}
+          - pipeline_root: ${"gs://" + project_id + "-pipeline-metadata/prod"}
+          - template_uri: ${"https://" + region + "-kfp.pkg.dev/" + project_id + "/pipeline-templates/churn-training-pipeline/latest"}
+          - serving_image_uri: ${region + "-docker.pkg.dev/" + project_id + "/containers/serving:latest"}
+          - pipeline_sa: ${"vertex-ai-pipeline-sa@" + project_id + ".iam.gserviceaccount.com"}
+          - batch_predict_sa: ${"vertex-batch-predict-sa@" + project_id + ".iam.gserviceaccount.com"}
+
+    # Without an explicit pipelineJobId Vertex generates a numeric one, so every run is
+    # identified as e.g. 4031686213072060416 — in Cloud Logging, in the drift email's
+    # pipeline_job.name, and in last_retrain_status's "a retraining pipeline is still
+    # running (...)" message. displayName cannot carry the distinction instead: it is
+    # matched literally by last_retrain_status to enforce the in-flight and 7-day-interval
+    # guards, so making it unique per run would silently stop both from matching anything.
+    #
+    # time.format renders epoch seconds as RFC 3339 with microsecond precision — verified
+    # against the live API, it returns "2026-09-07T17:37:15.635864Z". The id charset is
+    # [a-z0-9-], so ':' and '.' are dropped and 'T'/'Z' replaced, leaving
+    # churn-training-retrain-2026-09-07-173715635864.
+    #
+    # Stripping '.' is required, not cosmetic: leaving it in produces an id containing a
+    # character outside the allowed charset, and the create fails with 400. That would only
+    # surface in the retraining path, which runs solely after drift is already confirmed —
+    # the worst possible place to discover a formatting assumption was wrong.
+    - build_job_id:
+        assign:
+          - submitted_at: ${time.format(sys.now())}
+          - stamp: ${text.replace_all(text.replace_all(text.replace_all(text.replace_all(submitted_at, ":", ""), ".", ""), "T", "-"), "Z", "")}
+          - job_id: ${"churn-training-retrain-" + stamp}
+          - job_name: ${"projects/" + project_id + "/locations/" + region + "/pipelineJobs/" + job_id}
+
+    - submit:
+        try:
+          call: http.post
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/pipelineJobs"}
+            auth:
+              type: OAuth2
+            query:
+              pipelineJobId: ${job_id}
+            body:
+              displayName: "churn-training-retrain"
+              templateUri: ${template_uri}
+              serviceAccount: ${pipeline_sa}
+              runtimeConfig:
+                gcsOutputDirectory: ${pipeline_root}
+                parameterValues:
+                  project_id: ${project_id}
+                  artifact_gcs_prefix: ${training_data_prefix + "/artifacts"}
+                  batch_test_gcs_prefix: ${training_data_prefix + "/batch-test"}
+                  serving_image_uri: ${serving_image_uri}
+                  batch_predict_service_account: ${batch_predict_sa}
+          result: submit_resp
+        retry: ${http.default_retry}
+        # A fixed id makes submission idempotent, and 409 is that guarantee doing its job
+        # rather than a failure. The dangerous retry case is the ambiguous one: the create
+        # reached Vertex and the response was lost. With a generated id the retry silently
+        # starts a SECOND training run — two pipelines racing over the same
+        # ml.split_assignments partition. With this id it comes back ALREADY_EXISTS, which
+        # tells us the job we wanted is already running, so we fetch it and carry on.
+        # Regenerating the timestamp per attempt would restore the duplicate and remove the
+        # only signal that distinguishes "it worked" from "it didn't".
+        except:
+          as: e
+          steps:
+            - classify_submit_error:
+                switch:
+                  - condition: ${e.code == 409}
+                    next: fetch_existing_job
+                next: rethrow_submit_error
+
+            - rethrow_submit_error:
+                raise: ${e}
+
+            # 409 is not in http.default_retry's retryable set, so this runs immediately
+            # rather than after the retries are exhausted.
+            - fetch_existing_job:
+                try:
+                  call: http.get
+                  args:
+                    url: ${"https://" + region + "-aiplatform.googleapis.com/v1/" + job_name}
+                    auth:
+                      type: OAuth2
+                  result: submit_resp
+                retry: ${http.default_retry}
+
+    - return_job:
+        return: ${submit_resp.body}
+
+
+# Whether a retraining PipelineJob may be submitted right now. Returns
+# {blocked: bool, reason: string}. Two independent guards:
+#
+#   in_flight  — training runs far longer than this DAG waits, so yesterday's job is very
+#                often still going. Stacking a second one doubles the Vertex spend and races
+#                it against the first over the same ml.split_assignments partition
+#                (trainer.data.export_snapshot rewrites it per snapshot_date). This is the
+#                guard that actually prevents concurrent runs, and it is time-independent.
+#   backing_off — throttles *repeated failed attempts*, not retraining in general.
+#
+# The back-off is keyed on post_training's consecutive_rejections counter rather than on a
+# flat interval, because elapsed time is the wrong question. What matters is whether a new
+# run could plausibly produce a different outcome. A flat floor conflates two opposite
+# situations: a retrain that was promoted (the system is working — the next genuine drift
+# deserves an immediate response) and a retrain that was rejected (more of the same data
+# will very likely be rejected again). It also means a real population shift arriving two
+# days after a successful promotion goes unaddressed for the rest of the window, which is a
+# worse failure than the spend it was protecting against.
+#
+# So: 0 rejections -> no delay at all. Then 1, 2 and 7 days as rejections accumulate, which
+# responds to evidence that retraining is not helping rather than to the calendar.
+# post_training's MAX_CONSECUTIVE_REJECTIONS alert still escalates to a human in parallel.
+last_retrain_status:
+  params: [project_id, region]
+  steps:
+    - init:
+        assign:
+          - retrain_display_name: "churn-training-retrain"
+          - allowed: {"blocked": false, "reason": ""}
+          - rejections: 0
+          - rejections_resp: null
+
+    # The counter register_or_reject maintains: reset to 0 on promotion, incremented on
+    # every rejection. Absent until the first training run completes, and a read failure
+    # must not block retraining — both degrade to 0, i.e. "no evidence of repeated failure".
+    - read_rejections:
+        try:
+          call: http.get
+          args:
+            url: ${"https://storage.googleapis.com/storage/v1/b/" + project_id + "-pipeline-metadata/o/post-training-state%2Fchurn-predictor%2Fconsecutive_rejections.json?alt=media"}
+            auth:
+              type: OAuth2
+          result: rejections_resp
+        except:
+          as: e
+          steps:
+            - no_rejection_state:
+                assign:
+                  - rejections_resp: null
+
+    # Workflows expressions have no map literal, so the absent-state case is a branch
+    # rather than a default({}) fallback — `rejections` simply keeps the 0 set in init.
+    - check_rejections_present:
+        switch:
+          - condition: ${rejections_resp == null}
+            next: set_backoff
+        next: decode_rejections
+
+    # Workflows parses a response body into a map only for JSON content types, and this
+    # object is served as text/plain — post_training's upload_text calls upload_from_string
+    # without one, so GCS defaults it. The body therefore arrives as the raw string
+    # '{"consecutive_rejections": 7}', map.get on it yields null, and the guard silently
+    # read 0 rejections and imposed no delay at all. That is how a verified-deployed guard
+    # still submitted a retrain 3.7 days into a 7-day back-off.
+    #
+    # Decoding under try/except rather than testing the type keeps this correct under either
+    # content type: a string decodes, an already-parsed map raises and falls through to the
+    # map read. So fixing the producer later cannot silently re-break it.
+    - decode_rejections:
+        try:
+          steps:
+            - parse_rejection_text:
+                assign:
+                  - rejections: ${default(map.get(json.decode(rejections_resp.body), "consecutive_rejections"), 0)}
+        except:
+          as: e
+          steps:
+            - rejection_body_already_parsed:
+                assign:
+                  - rejections: ${default(map.get(rejections_resp, ["body", "consecutive_rejections"]), 0)}
+
+    # 0 / 1 / 2 / 7 days. A ladder of jump targets rather than arithmetic: Workflows has no
+    # pow(), and a switch condition dispatches with `next`, not by assigning inline. The
+    # shape that matters is "free after a success, escalating while attempts keep failing".
+    - set_backoff:
+        switch:
+          - condition: ${rejections <= 0}
+            next: backoff_none
+          - condition: ${rejections == 1}
+            next: backoff_one_day
+          - condition: ${rejections == 2}
+            next: backoff_two_days
+        next: backoff_max
+
+    - backoff_none:
+        assign:
+          - backoff_seconds: 0
+        next: list_recent
+
+    - backoff_one_day:
+        assign:
+          - backoff_seconds: 86400
+        next: list_recent
+
+    - backoff_two_days:
+        assign:
+          - backoff_seconds: 172800
+        next: list_recent
+
+    - backoff_max:
+        assign:
+          - backoff_seconds: 604800
+        next: list_recent
+
+    - list_recent:
+        try:
+          call: http.get
+          args:
+            url: ${"https://" + region + "-aiplatform.googleapis.com/v1/projects/" + project_id + "/locations/" + region + "/pipelineJobs"}
+            auth:
+              type: OAuth2
+            query:
+              filter: ${"display_name=\"" + retrain_display_name + "\""}
+              orderBy: "create_time desc"
+              pageSize: 1
+          result: jobs_resp
+        retry: ${http.default_retry}
+
+    # No retraining has ever run — nothing to throttle against.
+    - check_any_exist:
+        switch:
+          - condition: ${len(default(map.get(jobs_resp.body, "pipelineJobs"), [])) == 0}
+            next: allow
+        next: inspect_latest
+
+    - inspect_latest:
+        assign:
+          - latest: ${jobs_resp.body.pipelineJobs[0]}
+          - latest_state: ${default(map.get(latest, "state"), "")}
+          # time.parse converts the RFC 3339 createTime to seconds since the Unix epoch,
+          # the same units sys.now() returns.
+          - age_seconds: ${sys.now() - time.parse(latest.createTime)}
+
+    - check_in_flight:
+        switch:
+          - condition: ${latest_state in ["PIPELINE_STATE_PENDING", "PIPELINE_STATE_QUEUED", "PIPELINE_STATE_RUNNING"]}
+            next: block_in_flight
+        next: check_backoff
+
+    - block_in_flight:
+        return:
+          blocked: true
+          reason: ${"a retraining pipeline is still running (" + latest.name + ")"}
+
+    - check_backoff:
+        switch:
+          - condition: ${backoff_seconds > 0 and age_seconds < backoff_seconds}
+            next: block_backing_off
+        next: allow
+
+    - block_backing_off:
+        return:
+          blocked: true
+          reason: ${"last retraining ran " + string(int(age_seconds / 3600)) + "h ago and the previous " + string(rejections) + " challenger(s) were rejected, so attempts are backing off for " + string(int(backoff_seconds / 3600)) + "h"}
+
+    - allow:
+        return: ${allowed}
+
+
+# The API key is fetched at execution time, not baked into the workflow.
+# Using "latest" means a rotated key takes effect immediately on the next run
+# without touching or redeploying the workflow definition.
+get_sendgrid_key:
+  params: [project_id]
+  steps:
+    - get_secret:
+        try:
+          call: http.get
+          args:
+            url: ${"https://secretmanager.googleapis.com/v1/projects/" + project_id + "/secrets/sendgrid-api-key/versions/latest:access"}
+            auth:
+              type: OAuth2
+          result: secret_resp
+        retry: ${http.default_retry}
+
+    # The Secret Manager REST API always base64-encodes payload.data over HTTP.
+    - decode_key:
+        return: ${base64.decode(secret_resp.body.payload.data)}
+
+
+send_failure_alert:
+  params: [project_id, to_email, from_email, alerts_enabled, job_name, error]
+  steps:
+    - check_alerts_enabled:
+        switch:
+          - condition: ${not alerts_enabled}
+            next: done
+    - get_key:
+        call: get_sendgrid_key
+        args:
+          project_id: ${project_id}
+        result: api_key
+
+    - send_email:
+        try:
+          call: http.post
+          args:
+            url: "https://api.sendgrid.com/v3/mail/send"
+            headers:
+              Authorization: ${"Bearer " + api_key}
+              Content-Type: "application/json"
+            body:
+              personalizations:
+                - to:
+                    - email: ${to_email}
+              from:
+                email: ${from_email}
+              subject: '${"[MLOps Alert] Pipeline failure: " + job_name}'
+              content:
+                - type: "text/plain"
+                  value: '${"Cloud Workflows pipeline failed at job ''" + job_name + "''. Error: " + json.encode_to_string(error)}'
+          result: _
+        retry: ${http.default_retry}
+
+    - done:
+        return: null
+
+
+# A data-quality failure is an incident, not a model event: the pipeline produced a
+# snapshot that cannot be trusted, so the message names the failed assertions and says
+# explicitly that retraining was withheld — the opposite of the drift alert, which reports
+# that retraining was started.
+send_data_quality_alert:
+  params: [project_id, to_email, from_email, alerts_enabled, decision]
+  steps:
+    - check_alerts_enabled:
+        switch:
+          - condition: ${not alerts_enabled}
+            next: done
+    - get_key:
+        call: get_sendgrid_key
+        args:
+          project_id: ${project_id}
+        result: api_key
+
+    # Workflows caps a single expression at 400 characters, so the message is assembled
+    # across several assignments (each under the cap) and concatenated last — the same
+    # pattern sync_predictions_to_ml_predictions uses for its MERGE statement.
+    - build_message:
+        assign:
+          - subject: "[MLOps Alert] Feature snapshot failed data-quality checks"
+          - body_part1: '${"The latest feature snapshot (" + string(decision.snapshot_date) + ") failed data-quality assertions, so retraining was withheld regardless of drift. "}'
+          - body_part2: '${"Failed checks: " + json.encode_to_string(decision.data_quality.failures) + ". "}'
+          - body_part3: "Retraining on a snapshot in this state would bake the defect into the model, and the champion/challenger gate would not catch it: the challenger is evaluated against a test split drawn from the same bad data. Investigate the upstream pipeline before retraining."
+          - body_text: ${body_part1 + body_part2 + body_part3}
+
+    - send_email:
+        try:
+          call: http.post
+          args:
+            url: "https://api.sendgrid.com/v3/mail/send"
+            headers:
+              Authorization: ${"Bearer " + api_key}
+              Content-Type: "application/json"
+            body:
+              personalizations:
+                - to:
+                    - email: ${to_email}
+              from:
+                email: ${from_email}
+              subject: ${subject}
+              content:
+                - type: "text/plain"
+                  value: ${body_text}
+          result: _
+        retry: ${http.default_retry}
+
+    - done:
+        return: null
+
+
+# suppressed_reason defaults to null so the two call sites that never suppress (feature
+# drift that did submit a job, and the score-only monitoring alert) need not pass it.
+send_drift_alert:
+  params:
+    [
+      project_id,
+      to_email,
+      from_email,
+      alerts_enabled,
+      decision,
+      pipeline_job,
+      suppressed_reason: null,
+    ]
+  steps:
+    - check_alerts_enabled:
+        switch:
+          - condition: ${not alerts_enabled}
+            next: done
+    - get_key:
+        call: get_sendgrid_key
+        args:
+          project_id: ${project_id}
+        result: api_key
+
+    # pipeline_job is null both for a score-only breach (monitoring-only) and for feature
+    # drift whose retraining was suppressed by last_retrain_status — suppressed_reason is
+    # what separates those two, since only the latter has breached features to report.
+    - check_retrain_triggered:
+        switch:
+          - condition: ${pipeline_job != null}
+            next: build_retrain_message
+          - condition: ${suppressed_reason != null}
+            next: build_suppressed_message
+        next: build_score_only_message
+
+    - build_retrain_message:
+        assign:
+          - subject: "[MLOps Alert] Data drift detected — retraining triggered"
+          - body_text: '${"PSI threshold breached for: " + json.encode_to_string(decision.breached_features) + ". Retraining pipeline submitted: " + pipeline_job.name}'
+        next: send_email
+
+    - build_suppressed_message:
+        assign:
+          - subject: "[MLOps Alert] Data drift persists — retraining suppressed"
+          - body_text: '${"PSI threshold breached for: " + json.encode_to_string(decision.breached_features) + ". No retraining was submitted: " + suppressed_reason + ". Drift that outlives a retrain usually means the challenger cannot beat the champion or the shift is upstream of the model — manual review recommended."}'
+        next: send_email
+
+    # score_threshold, not threshold: the latter is the feature-PSI floor (the configured
+    # effect size), while the score check is judged against max(that floor, the bootstrapped
+    # sampling-noise floor for this batch's size). Quoting the wrong one understates the bar
+    # the breach actually cleared, which is the number the reader needs to size the alarm.
+    # Both keys are written together by drift_monitor.detect._add_score_drift, so reaching
+    # this branch (score_drift_detected true) guarantees score_threshold is present.
+    - build_score_only_message:
+        assign:
+          - subject: "[MLOps Alert] Prediction score drift detected"
+          - body_text: '${"Champion prediction-score PSI=" + string(decision.score_psi) + " exceeds threshold " + string(decision.score_threshold) + ". Feature distributions are stable, so no retraining was triggered automatically — manual review recommended."}'
+        next: send_email
+
+    - send_email:
+        try:
+          call: http.post
+          args:
+            url: "https://api.sendgrid.com/v3/mail/send"
+            headers:
+              Authorization: ${"Bearer " + api_key}
+              Content-Type: "application/json"
+            body:
+              personalizations:
+                - to:
+                    - email: ${to_email}
+              from:
+                email: ${from_email}
+              subject: ${subject}
+              content:
+                - type: "text/plain"
+                  value: ${body_text}
+          result: _
+        retry: ${http.default_retry}
+
+    - done:
+        return: null

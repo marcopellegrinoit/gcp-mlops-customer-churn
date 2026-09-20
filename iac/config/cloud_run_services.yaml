@@ -1,0 +1,60 @@
+cloud_run_services:
+  dashboard-service:
+    description: "Streamlit churn-risk dashboard for business users, fronted by Identity-Aware Proxy"
+    ar_repository: "containers"
+    image_name: "dashboard"
+    image_tag: "latest"
+    cpu: "1"
+    memory: "1Gi"
+    # Scale to zero. See the scaling block in modules/cloud_run_service/main.tf for why
+    # min_instances = 1 would leave the Cloud Run free tier by roughly 15x.
+    min_instances: 0
+    # One. This is a demonstration platform read by a handful of people, and a single
+    # instance serves that with room to spare — so scaling out would only ever be the
+    # symptom of something going wrong, and there is no reason to pay for the second and
+    # third instance that a runaway would otherwise start. Raise it if real usage ever
+    # makes max_concurrency the binding constraint.
+    max_instances: 1
+    # With max_instances at 1 this is the whole service's simultaneous-reader ceiling,
+    # not a scale-out trigger: request 21 is refused rather than starting an instance.
+    # That is the intended behaviour — see the comment on max_instance_request_concurrency
+    # in modules/cloud_run_service/main.tf for why 80 is the wrong number here.
+    max_concurrency: 20
+    env_vars:
+      BQ_LOCATION: "europe-west1"
+      # Both are views, scoped in SQL to a single snapshot (risk) or to narrow aggregate
+      # columns (trend) — see projects/dbt_transform/models/marts/.
+      RISK_TABLE: "features.churn_risk_current"
+      TREND_TABLE: "features.churn_risk_daily"
+      # Hard ceiling BigQuery enforces per query: a job projected to exceed it is rejected
+      # before it runs. The backstop under the app's in-process caching, not a replacement
+      # for it — it turns a view rewritten into a full-history scan into a visible error
+      # rather than a surprise bill.
+      MAX_BYTES_BILLED: "2147483648" # 2 GiB
+      # The pipeline scores once a night, so a shorter window would re-query BigQuery for
+      # data that provably has not changed. Filtering and sorting run against the cached
+      # frame, so no user interaction costs a query.
+      CACHE_TTL_SECONDS: "1800"
+      # Presentation bands, independent of the champion's registered decision threshold:
+      # the model's operating point answers "act or not", these answer "in what order".
+      # HIGH_RISK_THRESHOLD is mirrored by churn_risk_daily.sql and asserted equal to it in
+      # projects/dashboard/tests/test_risk.py — retune both or neither.
+      HIGH_RISK_THRESHOLD: "0.7"
+      MEDIUM_RISK_THRESHOLD: "0.4"
+      # A driver is called out only this far outside the cohort reference. Without a floor
+      # every customer shows a full list of marginal deviations and nothing is ranked.
+      INDICATOR_RATIO: "1.5"
+    bq_dataset_roles:
+      # dataViewer on both, not just features: churn_risk_current is a plain view, so
+      # BigQuery authorises the reader against the underlying tables. The view reads
+      # features.customer_features and ml.predictions, and dropping either grant makes the
+      # dashboard fail at query time rather than render a partial page.
+      features: "roles/bigquery.dataViewer"
+      ml: "roles/bigquery.dataViewer"
+    service_account_project_roles:
+      # Running a query is a job, even a read-only one against a view.
+      - "roles/bigquery.jobUser"
+    iap_enabled: true
+    # Who may sign in. Populated from the dashboard_viewers Terraform variable rather than
+    # hardcoded here, so the access list is per-environment and a group can stand in for
+    # individuals — see iac/variables.tf.

@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Root uv workspace (obs-common, ml-common, data_generator, modeling, trainer,
+  # serving, post-training, training-pipeline, drift-monitor share this lockfile).
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # dbt_transform is not part of the root workspace and has its own lockfile.
+  - package-ecosystem: "uv"
+    directory: "/projects/dbt_transform"
+    schedule:
+      interval: "weekly"
+
+  # Terraform provider versions (iac/provider.tf).
+  - package-ecosystem: "terraform"
+    directory: "/iac"
+    schedule:
+      interval: "weekly"

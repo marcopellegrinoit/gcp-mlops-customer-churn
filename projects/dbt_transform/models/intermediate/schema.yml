@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: int_customer_aggregates
+    description: >
+      Per-customer behavioral aggregates computed over 30/60/90-day rolling windows
+      anchored to the snapshot date, not to each customer's own most recent event.
+      Includes transaction trends, payment health, engagement scores, and activity counts.
+    columns:
+      - name: customer_id
+        tests:
+          - unique
+          - not_null
+      - name: days_since_last_successful_payment
+        description: >
+          Calendar days from the customer's most recent successful payment to the snapshot
+          date, capped at the payment_recency_cap_days var. NULL when no successful payment
+          exists in the history — informative rather than missing, so no sentinel is emitted.
+        tests:
+          # The cap is what keeps this column stationary. Uncapped it is anchored to
+          # CURRENT_DATE() and climbs by 1 a day, drifting against any frozen baseline
+          # forever; a regression that drops the LEAST() would otherwise surface only as
+          # unexplained PSI weeks later.
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: "{{ var('payment_recency_cap_days') }}"

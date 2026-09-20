@@ -1,0 +1,125 @@
+version: 2
+
+models:
+  - name: customer_features
+    tests:
+      # The grain is (customer_id, snapshot_date) — one row per customer per daily snapshot.
+      # customer_id alone used to test as unique only because the generator minted a fresh
+      # customer pool on every run, so no customer ever appeared on two days. Customer
+      # identity is stable now (see data-lifecycle.md), so the same customer legitimately
+      # recurs across partitions and the single-column test asserts something false.
+      - unique:
+          column_name: "concat(customer_id, '|', cast(snapshot_date as string))"
+    description: >
+      ML-ready feature matrix. One row per customer, combining the latest customer
+      state with 30/60/90-day rolling behavioral aggregates. This table is
+      the direct input to Vertex AI training and serving pipelines.
+    columns:
+      - name: customer_id
+        description: "UUID identifying the synthetic customer."
+        tests:
+          - not_null
+      - name: churned
+        description: "Target label: TRUE if the customer's most recent event was a churn signal."
+        tests:
+          - not_null
+      - name: feature_computed_at
+        description: "UTC timestamp of when this feature row was materialized."
+        tests:
+          - not_null
+      - name: membership_tier
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['supporter', 'friend', 'champion', 'guardian']
+      - name: payment_failure_rate_30d
+        description: "Fraction of payment events in the last 30 days that failed. NULL if no events."
+      - name: days_since_last_successful_payment
+        description: >
+          Calendar days from the customer's most recent successful payment to snapshot_date.
+          NULL when there is no successful payment on record — which is informative rather
+          than missing, since it identifies customers who have never paid successfully (MNAR,
+          correlated with churn; see data-lifecycle.md). No 9999 sentinel is emitted; the
+          column previously documented one that the SQL never produced.
+      - name: snapshot_date
+        description: "Date when this feature snapshot was computed. Partition key — one partition per dbt run day."
+        tests:
+          - not_null
+
+  - name: customer_features_current
+    description: >
+      The newest partition of customer_features, minus the label and build metadata — the
+      input table for the daily Vertex AI BatchPredictionJob. Exists because bigquerySource
+      accepts a table reference with no row filter, so restricting the daily scoring run to
+      one snapshot has to be expressed upstream. Rebuilt by the same dbt run that builds
+      customer_features.
+    columns:
+      - name: customer_id
+        description: "UUID identifying the synthetic customer."
+        tests:
+          - unique
+          - not_null
+      - name: snapshot_date
+        description: >
+          Feature snapshot being scored. Constant across this table; carried through so the
+          batch job echoes it into its output and sync_predictions_to_ml_predictions can key
+          its MERGE on (customer_id, snapshot_date).
+        tests:
+          - not_null
+
+  - name: churn_risk_current
+    description: >
+      Business-facing read model behind the churn dashboard: the newest scored snapshot of
+      ml.predictions joined back to the customer_features columns a retention owner can act
+      on. A view rather than a table because dbt runs *before* batch prediction in the daily
+      DAG, so anything materialised here would be a day stale — see the model for the full
+      reasoning. Carries no `churned` label: the observed outcome must not sit next to a
+      predicted probability in a business UI.
+    columns:
+      - name: customer_id
+        description: "UUID identifying the synthetic customer. One row per customer for the scored snapshot."
+        tests:
+          - unique
+          - not_null
+      - name: churn_probability
+        description: "Champion model's predicted churn probability."
+        tests:
+          - not_null
+          # A probability outside [0, 1] means the serving contract changed underneath the
+          # dashboard; the risk bands and every percentage in the UI are meaningless then.
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: churn_prediction
+        description: "Binary prediction after the champion's registered decision threshold."
+        tests:
+          - not_null
+      - name: monthly_value
+        description: >
+          avg_transaction_30d, renamed. The generator emits monthly recurring amounts, so
+          this is a monthly run rate — not an annualised or lifetime value.
+      - name: snapshot_date
+        description: "The scored snapshot. Identical on every row: the view filters to MAX(snapshot_date)."
+        tests:
+          - not_null
+
+  - name: churn_risk_daily
+    description: >
+      One row per scored day for the dashboard's trend strip. Aggregates ml.predictions
+      alone and never joins customer_features — the join is what would make this the one
+      dashboard query whose cost grows with retention, and it runs on every page load.
+    columns:
+      - name: snapshot_date
+        description: "Scored day."
+        tests:
+          - unique
+          - not_null
+      - name: customers_scored
+        description: "Rows in that day's prediction partition."
+        tests:
+          - not_null
+      - name: model_versions_used
+        description: >
+          Distinct champion models in that day's partition. A trend discontinuity that
+          coincides with a change here is a model change, not a customer-behaviour change.

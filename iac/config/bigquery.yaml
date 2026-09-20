@@ -1,0 +1,371 @@
+datasets:
+  features:
+    description: "Engineered ML feature matrices produced by dbt transformations."
+    tables:
+      customer_features:
+        description: "ML-ready feature matrix with one row per customer for Vertex AI training and serving."
+        friendly_name: "Customer Feature Matrix"
+        schema:
+          - name: customer_id
+            type: STRING
+            mode: REQUIRED
+            description: "Unique identifier for the customer."
+          - name: membership_tier
+            type: STRING
+            mode: NULLABLE
+            description: "Customer membership tier (supporter, friend, champion, guardian)."
+          - name: region
+            type: STRING
+            mode: NULLABLE
+            description: "Geographic region of the customer."
+          - name: member_since_days
+            type: INT64
+            mode: NULLABLE
+            description: "Number of days since the customer first joined."
+          - name: contact_requests_last_30d
+            type: INT64
+            mode: NULLABLE
+            description: "Contact or support requests submitted in the last 30 days."
+          - name: avg_transaction_30d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Average monthly transaction in the last 30 days."
+          - name: avg_transaction_90d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Average monthly transaction in the last 90 days."
+          - name: payment_failure_rate_30d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Fraction of payment events in the last 30 days that failed."
+          - name: payment_failure_rate_90d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Fraction of payment events in the last 90 days that failed."
+          - name: total_payment_attempts
+            type: INT64
+            mode: NULLABLE
+            description: "Payment attempts summed over the trailing activity window (dbt var activity_window_days, 90d). Windowed rather than lifetime: a lifetime sum over an append-only CDC log encodes the dataset's age and drifts against any frozen baseline forever."
+          - name: days_since_last_successful_payment
+            type: INT64
+            mode: NULLABLE
+            description: "Calendar days from the most recent successful payment to snapshot_date, capped at the dbt var payment_recency_cap_days (30). NULL when there is no successful payment on record — informative rather than missing (it identifies customers who have never paid successfully), and no sentinel value is emitted."
+          - name: avg_engagement_30d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Average engagement score in the last 30 days."
+          - name: avg_engagement_90d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Average engagement score in the last 90 days."
+          - name: campaign_participation_rate
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Fraction of events that are campaign actions."
+          - name: preferred_channel
+            type: STRING
+            mode: NULLABLE
+            description: "Most frequent acquisition or communication channel for the customer."
+          - name: total_events
+            type: INT64
+            mode: NULLABLE
+            description: "CDC events for the customer across the retained source history (raw.activity_cdc keeps 90 days of partitions)."
+          - name: events_last_30d
+            type: INT64
+            mode: NULLABLE
+            description: "Number of CDC events in the last 30 days."
+          - name: events_last_90d
+            type: INT64
+            mode: NULLABLE
+            description: "Number of CDC events in the last 90 days."
+          - name: renewal_count
+            type: INT64
+            mode: NULLABLE
+            description: "Membership renewal events within the trailing activity window (dbt var activity_window_days, 90d), for the same reason total_payment_attempts is windowed."
+          - name: latest_event_ts
+            type: TIMESTAMP
+            mode: NULLABLE
+            description: "Timestamp of the customer's most recent CDC event."
+          - name: feature_computed_at
+            type: TIMESTAMP
+            mode: REQUIRED
+            description: "UTC timestamp when this feature row was last computed by dbt."
+          - name: churned
+            type: BOOL
+            mode: NULLABLE
+            description: "Target label: TRUE if the customer's most recent event was a churn signal."
+          - name: snapshot_date
+            type: DATE
+            mode: REQUIRED
+            description: "Date when this feature snapshot was computed (partition key)."
+        time_partitioning:
+          type: DAY
+          field: snapshot_date
+          expiration_ms: 7776000000  # 90 days
+        clustering_fields:
+          - customer_id
+
+  ml:
+    description: "Model metadata, predictions, and evaluation outputs."
+    tables:
+      predictions:
+        description: "Batch churn predictions scored by the serving container against the champion model."
+        friendly_name: "Churn Predictions"
+        schema:
+          - name: customer_id
+            type: STRING
+            mode: REQUIRED
+            description: "Unique identifier for the customer."
+          - name: churn_probability
+            type: FLOAT64
+            mode: REQUIRED
+            description: "Predicted churn probability from the champion model."
+          - name: churn_prediction
+            type: BOOL
+            mode: REQUIRED
+            description: "Binary churn prediction after applying the registered decision threshold."
+          - name: model_version
+            type: STRING
+            mode: REQUIRED
+            description: "Vertex AI Model Registry resource name of the champion model used to score this row."
+          - name: snapshot_date
+            type: DATE
+            mode: REQUIRED
+            description: "Date of the feature snapshot that was scored (partition key)."
+          - name: predicted_at
+            type: TIMESTAMP
+            mode: REQUIRED
+            description: "UTC timestamp when this prediction was written."
+        time_partitioning:
+          type: DAY
+          field: snapshot_date
+        clustering_fields:
+          - customer_id
+
+      split_assignments:
+        description: "Frozen, permanent record of the stratified train/test split for every training snapshot — the full customer_features row plus which split it fell into. Never expires: it's the lineage record of exactly what data trained/evaluated each model, deliberately kept longer than the training-data GCS bucket's 30-day lifecycle."
+        friendly_name: "Training Split Assignments"
+        schema:
+          - name: customer_id
+            type: STRING
+            mode: REQUIRED
+            description: "Unique identifier for the customer."
+          - name: membership_tier
+            type: STRING
+            mode: NULLABLE
+            description: "Customer membership tier (supporter, friend, champion, guardian)."
+          - name: region
+            type: STRING
+            mode: NULLABLE
+            description: "Geographic region of the customer."
+          - name: member_since_days
+            type: INT64
+            mode: NULLABLE
+            description: "Number of days since the customer first joined."
+          - name: contact_requests_last_30d
+            type: INT64
+            mode: NULLABLE
+            description: "Contact or support requests submitted in the last 30 days."
+          - name: avg_transaction_30d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Average monthly transaction in the last 30 days."
+          - name: avg_transaction_90d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Average monthly transaction in the last 90 days."
+          - name: payment_failure_rate_30d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Fraction of payment events in the last 30 days that failed."
+          - name: payment_failure_rate_90d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Fraction of payment events in the last 90 days that failed."
+          - name: total_payment_attempts
+            type: INT64
+            mode: NULLABLE
+            description: "Payment attempts summed over the trailing activity window (dbt var activity_window_days, 90d). Windowed rather than lifetime: a lifetime sum over an append-only CDC log encodes the dataset's age and drifts against any frozen baseline forever."
+          - name: days_since_last_successful_payment
+            type: INT64
+            mode: NULLABLE
+            description: "Calendar days from the most recent successful payment to snapshot_date, capped at the dbt var payment_recency_cap_days (30). NULL when there is no successful payment on record — informative rather than missing (it identifies customers who have never paid successfully), and no sentinel value is emitted."
+          - name: avg_engagement_30d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Average engagement score in the last 30 days."
+          - name: avg_engagement_90d
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Average engagement score in the last 90 days."
+          - name: campaign_participation_rate
+            type: FLOAT64
+            mode: NULLABLE
+            description: "Fraction of events that are campaign actions."
+          - name: preferred_channel
+            type: STRING
+            mode: NULLABLE
+            description: "Most frequent acquisition or communication channel for the customer."
+          - name: total_events
+            type: INT64
+            mode: NULLABLE
+            description: "CDC events for the customer across the retained source history (raw.activity_cdc keeps 90 days of partitions)."
+          - name: events_last_30d
+            type: INT64
+            mode: NULLABLE
+            description: "Number of CDC events in the last 30 days."
+          - name: events_last_90d
+            type: INT64
+            mode: NULLABLE
+            description: "Number of CDC events in the last 90 days."
+          - name: renewal_count
+            type: INT64
+            mode: NULLABLE
+            description: "Membership renewal events within the trailing activity window (dbt var activity_window_days, 90d), for the same reason total_payment_attempts is windowed."
+          - name: churned
+            type: BOOL
+            mode: REQUIRED
+            description: "Target label: TRUE if the customer's most recent event was a churn signal."
+          - name: snapshot_date
+            type: DATE
+            mode: REQUIRED
+            description: "Date of the feature snapshot this assignment was computed from (partition key)."
+          - name: split
+            type: STRING
+            mode: REQUIRED
+            description: "Which split this customer was assigned to for this snapshot_date: 'train' or 'test'."
+          - name: assigned_at
+            type: TIMESTAMP
+            mode: REQUIRED
+            description: "UTC timestamp when this split assignment was computed."
+        time_partitioning:
+          type: DAY
+          field: snapshot_date
+        clustering_fields:
+          - customer_id
+
+      drift_metrics:
+        description: "Per-feature PSI time series, one row per feature per drift-monitor run. Retraining is gated on a feature breaching across consecutive runs rather than a single night, and that persistence rule reads its history from here; it also makes 'has this been breaching for weeks or is it new?' answerable, which the single-file GCS decision (drift/latest.json, overwritten daily) cannot express."
+        friendly_name: "Drift PSI History"
+        schema:
+          - name: run_ts
+            type: TIMESTAMP
+            mode: REQUIRED
+            description: "UTC timestamp of the drift-monitor run that produced this row; identical across every feature of one run, which is what groups them into a run."
+          - name: snapshot_date
+            type: DATE
+            mode: REQUIRED
+            description: "Date of the feature snapshot that was evaluated (partition key)."
+          - name: champion_model
+            type: STRING
+            mode: REQUIRED
+            description: "Vertex AI Model Registry resource name of the champion whose frozen baseline this PSI was measured against. Scopes the persistence rule: a new champion brings a new baseline, so PSI values are not comparable across champions."
+          - name: feature
+            type: STRING
+            mode: REQUIRED
+            description: "Feature column name, or the churn_probability pseudo-feature for score drift."
+          - name: psi
+            type: FLOAT64
+            mode: REQUIRED
+            description: "Population Stability Index of this feature against the champion's frozen baseline."
+          - name: threshold
+            type: FLOAT64
+            mode: REQUIRED
+            description: "Effective threshold applied to this feature this run: the configured floor, or the bootstrapped sampling-noise floor for this snapshot size, whichever is higher."
+          - name: breached
+            type: BOOL
+            mode: REQUIRED
+            description: "Whether psi exceeded threshold in this run. Always false for an unmonitored feature."
+          - name: monitored
+            type: BOOL
+            mode: REQUIRED
+            description: "Whether this feature's baseline carries usable drift signal. False for a single-bucket (constant) column and for legacy baselines frozen without per-bucket proportions — its PSI is reported but never gates retraining."
+        time_partitioning:
+          type: DAY
+          field: snapshot_date
+        clustering_fields:
+          - feature
+
+  scratch:
+    description: "Ephemeral, self-expiring tables used as scratch space by the training pipeline (e.g. per-run batch-prediction source tables). Not for long-term reference — the dataset's default_table_expiration_ms deletes tables automatically."
+    default_table_expiration_ms: 86400000  # 1 day
+    tables: {}
+
+  raw:
+    description: "Raw synthetic customer and membership activity CDC dataset."
+    tables:
+      activity_cdc:
+        description: "Append-only synthetic CDC event log for customer lapse simulation."
+        friendly_name: "Customer Activity CDC Events"
+        schema:
+          - name: event_id
+            type: STRING
+            mode: REQUIRED
+            description: "Unique identifier for the CDC event."
+          - name: event_timestamp
+            type: TIMESTAMP
+            mode: REQUIRED
+            description: "Timestamp when the event was captured by the CDC pipeline."
+          - name: customer_id
+            type: STRING
+            mode: REQUIRED
+            description: "Unique identifier for the customer associated with the event."
+          - name: event_type
+            type: STRING
+            mode: NULLABLE
+            description: "Type of CDC operation (e.g., INSERT, UPDATE, DELETE)."
+          - name: region
+            type: STRING
+            mode: NULLABLE
+            description: "Geographic region of the customer."
+          - name: membership_tier
+            type: STRING
+            mode: NULLABLE
+            description: "Customer membership tier at the time of the event (e.g., Bronze, Silver, Gold)."
+          - name: monthly_transaction
+            type: FLOAT
+            mode: NULLABLE
+            description: "Recurring monthly transaction amount in USD."
+          - name: payment_status
+            type: STRING
+            mode: NULLABLE
+            description: "Current payment status of the customer (e.g., active, failed, pending)."
+          - name: payment_attempts_last_30d
+            type: INT64
+            mode: NULLABLE
+            description: "Number of payment attempts made in the last 30 days."
+          - name: engagement_score
+            type: FLOAT
+            mode: NULLABLE
+            description: "Customer engagement score ranging from 0 to 100."
+          - name: member_since_days
+            type: INT64
+            mode: NULLABLE
+            description: "Number of days since the customer first joined."
+          - name: contact_requests_last_30d
+            type: INT64
+            mode: NULLABLE
+            description: "Number of support or contact requests submitted in the last 30 days."
+          - name: churned
+            type: BOOL
+            mode: NULLABLE
+            description: "Whether the customer has churned at the time of the event."
+          - name: channel
+            type: STRING
+            mode: NULLABLE
+            description: "Acquisition or communication channel for the customer (e.g., email, web, phone)."
+          - name: raw_payload
+            type: STRING
+            mode: NULLABLE
+            description: "Raw JSON payload of the original CDC event before parsing."
+          - name: anomaly_injected
+            type: BOOL
+            mode: NULLABLE
+            description: "Flag indicating whether a synthetic anomaly was injected into this record."
+        time_partitioning:
+          type: DAY
+          field: event_timestamp
+          expiration_ms: 7776000000  # 90 days
+        clustering_fields:
+          - customer_id
+          - event_type

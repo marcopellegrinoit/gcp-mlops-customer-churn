@@ -1,0 +1,8 @@
+artifact_registry:
+  repositories:
+    containers:
+      format: DOCKER
+      description: "Container images for the customer churn MLOps platform"
+    pipeline-templates:
+      format: KFP
+      description: "Compiled Vertex AI Pipeline templates staged by Cloud Build"
