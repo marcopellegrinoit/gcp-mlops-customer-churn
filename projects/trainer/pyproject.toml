@@ -15,7 +15,7 @@ dependencies = [
     # Direct imports in trainer — loose ranges, exact pins owned by ml-common
     "pandas>=3,<4",
     "xgboost>=3,<4",
-    "scikit-learn>=1,<2",
+    "scikit-learn>=1.9.1,<2",
     # Infrastructure — GCP client libs track only major versions
     "db-dtypes>=1.7.1,<2",
     "google-cloud-aiplatform>=1.50.0,<2",
