@@ -19,7 +19,7 @@ dependencies = [
     # Infrastructure — GCP client libs track only major versions
     "db-dtypes>=1.7.1,<2",
     "google-cloud-aiplatform>=1.50.0,<2",
-    "google-cloud-bigquery>=3.0.0,<4",
+    "google-cloud-bigquery>=3.45.2,<4",
     "google-cloud-bigquery-storage>=2.41.0,<3",
     "google-cloud-storage>=3.14.1,<4",
 ]

@@ -13,7 +13,7 @@ dependencies = [
     # Deliberately still NOT ml-common: this app never loads a model or scores anything. It
     # reads a table the pipeline already wrote.
     "streamlit>=1.42,<2",
-    "google-cloud-bigquery>=3,<4",
+    "google-cloud-bigquery>=3.45.2,<4",
     "pandas>=3,<4",
     # BigQuery's to_dataframe() needs db-dtypes for DATE/TIME columns; without it a
     # snapshot_date column raises at query time rather than at import.

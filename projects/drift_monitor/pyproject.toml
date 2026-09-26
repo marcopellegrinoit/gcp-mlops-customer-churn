@@ -17,7 +17,7 @@ dependencies = [
     "db-dtypes>=1.7.1,<2",
     # Infrastructure — GCP client libs track only major versions
     "google-cloud-aiplatform>=1.50.0,<2",
-    "google-cloud-bigquery>=3.0.0,<4",
+    "google-cloud-bigquery>=3.45.2,<4",
     # Storage Read API backend for to_dataframe(); without it the client falls back to the
     # paginated REST endpoint and warns. Needs roles/bigquery.readSessionUser on the job SA.
     "google-cloud-bigquery-storage>=2.41.0,<3",
