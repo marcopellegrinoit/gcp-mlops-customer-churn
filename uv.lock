@@ -468,7 +468,7 @@ requires-dist = [
     { name = "altair", specifier = ">=6,<7" },
     { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "db-dtypes", specifier = ">=1.2,<2" },
-    { name = "google-cloud-bigquery", specifier = ">=3,<4" },
+    { name = "google-cloud-bigquery", specifier = ">=3.46.1,<4" },
     { name = "obs-common", editable = "projects/obs_common" },
     { name = "pandas", specifier = ">=3,<4" },
     { name = "pyarrow", specifier = ">=24,<25" },
@@ -523,7 +523,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "google-cloud-bigquery", specifier = ">=3.0.0" },
+    { name = "google-cloud-bigquery", specifier = ">=3.46.1" },
     { name = "numpy", specifier = ">=2.5.2" },
     { name = "obs-common", editable = "projects/obs_common" },
     { name = "pydantic", specifier = ">=2,<3" },
@@ -618,7 +618,7 @@ requires-dist = [
     { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "db-dtypes", specifier = ">=1.7.1,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
-    { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
+    { name = "google-cloud-bigquery", specifier = ">=3.46.1,<4" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.41.0,<3" },
     { name = "google-cloud-storage", specifier = ">=3.14.1,<4" },
     { name = "ml-common", editable = "projects/ml_common" },
@@ -753,7 +753,7 @@ wheels = [
 
 [[package]]
 name = "google-cloud-bigquery"
-version = "3.42.0"
+version = "3.46.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-api-core", extra = ["grpc"] },
@@ -764,9 +764,9 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/97/a6/3d40767763061323d70ecf1870d9d5f428ee6a7e66f7b6e7297ee17f8b30/google_cloud_bigquery-3.42.0.tar.gz", hash = "sha256:4491a75f82d905101e75b690ca4c6791984bf4f50653706747537b05baa90213", size = 514647, upload-time = "2026-06-15T22:55:34.21Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/80/9a6f1e7368ee0bc73dd5d6f26005d4e05ce18ffca1ef0de63fa41357253e/google_cloud_bigquery-3.46.1.tar.gz", hash = "sha256:c5564a58fc3c99b003cd334a8f302c6224bd34cb55c87476a3c445be1d00538b", size = 529893, upload-time = "2026-10-02T10:37:38.841Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/27/6ab5688744a08c15770ad10a4e430b16365f3ff95d9a59e565d47ce27175/google_cloud_bigquery-3.42.0-py3-none-any.whl", hash = "sha256:9df6a73043363cad17000c29591ed829be5f630ec30b85b29bc29062ab8b19a4", size = 263751, upload-time = "2026-06-15T22:55:32.352Z" },
+    { url = "https://files.pythonhosted.org/packages/41/57/b9bc61a4bad2f1f59b61191d0c099c4d75a4f65d3a5649a6c164610defab/google_cloud_bigquery-3.46.1-py3-none-any.whl", hash = "sha256:ee0e73d06a624c26445458e75f04deed894ed50a0c46bdc876f30c50e05ec6c2", size = 268065, upload-time = "2026-10-02T10:37:35.771Z" },
 ]
 
 [[package]]
@@ -1845,7 +1845,7 @@ requires-dist = [
     { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "db-dtypes", specifier = ">=1.7.1,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
-    { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
+    { name = "google-cloud-bigquery", specifier = ">=3.46.1,<4" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.41.0,<3" },
     { name = "google-cloud-storage", specifier = ">=3.14.1,<4" },
     { name = "ml-common", editable = "projects/ml_common" },
@@ -2704,7 +2704,7 @@ requires-dist = [
     { name = "data-contracts", editable = "projects/data_contracts" },
     { name = "db-dtypes", specifier = ">=1.7.1,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
-    { name = "google-cloud-bigquery", specifier = ">=3.0.0,<4" },
+    { name = "google-cloud-bigquery", specifier = ">=3.46.1,<4" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.41.0,<3" },
     { name = "google-cloud-storage", specifier = ">=3.14.1,<4" },
     { name = "ipywidgets", marker = "extra == 'dev'", specifier = ">=8.0.0,<9" },
