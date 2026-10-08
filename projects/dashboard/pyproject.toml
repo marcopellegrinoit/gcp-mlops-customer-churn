@@ -21,7 +21,7 @@ dependencies = [
     # Range rather than ml_common's exact pin: this image is not part of the training/
     # serving parity contract that motivates pinning there. It must stay compatible with
     # it regardless, since the workspace resolves one pyarrow for every package.
-    "pyarrow>=24,<25",
+    "pyarrow>=25.0.1,<26",
     "altair>=6,<7",
     "pydantic>=2,<3",
     "pydantic-settings>=2.14.2,<3",
