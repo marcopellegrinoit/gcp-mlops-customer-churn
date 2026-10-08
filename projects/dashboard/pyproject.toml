@@ -22,7 +22,7 @@ dependencies = [
     # serving parity contract that motivates pinning there. It must stay compatible with
     # it regardless, since the workspace resolves one pyarrow for every package.
     "pyarrow>=24,<25",
-    "altair>=6,<7",
+    "altair>=6.3.0,<7",
     "pydantic>=2,<3",
     "pydantic-settings>=2.14.2,<3",
 ]
