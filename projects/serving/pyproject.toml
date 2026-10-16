@@ -9,7 +9,7 @@ dependencies = [
     # Shared data schemas — imported directly, so declared directly.
     "data-contracts",
     "xgboost>=3,<4",
-    "scikit-learn>=1,<2",
+    "scikit-learn>=1.9.1,<2",
     "pandas>=3,<4",
     # Vertex AI custom-container batch-prediction contract
     "fastapi>=0.141.1,<1",
