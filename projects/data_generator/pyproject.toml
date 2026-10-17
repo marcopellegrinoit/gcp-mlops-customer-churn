@@ -6,7 +6,7 @@ dependencies = [
     # MLE package — stdlib-only Cloud Logging setup, shared by every container entrypoint.
     "obs-common",
     "google-cloud-bigquery>=3.46.1",
-    "numpy>=2.5.2",
+    "numpy>=2.5.4",
     # data_generator.schema (the raw.activity_cdc row contract) and data_generator.config
     # (env-driven settings). Deliberately not ml-common: this job produces the platform's
     # source data and must not depend on anything that reads it.

@@ -10,7 +10,7 @@ dependencies = [
     "optuna==4.9.0",
     "shap==0.52.0",
     "scikit-learn==1.9.1",
-    "numpy==2.5.2",
+    "numpy==2.5.4",
     "pandas==3.0.3",
 ]
 
