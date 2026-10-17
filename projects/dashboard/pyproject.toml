@@ -17,7 +17,7 @@ dependencies = [
     "pandas>=3,<4",
     # BigQuery's to_dataframe() needs db-dtypes for DATE/TIME columns; without it a
     # snapshot_date column raises at query time rather than at import.
-    "db-dtypes>=1.2,<2",
+    "db-dtypes>=1.7.2,<2",
     # Range rather than ml_common's exact pin: this image is not part of the training/
     # serving parity contract that motivates pinning there. It must stay compatible with
     # it regardless, since the workspace resolves one pyarrow for every package.

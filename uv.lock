@@ -467,7 +467,7 @@ dev = [
 requires-dist = [
     { name = "altair", specifier = ">=6.3.0,<7" },
     { name = "data-contracts", editable = "projects/data_contracts" },
-    { name = "db-dtypes", specifier = ">=1.2,<2" },
+    { name = "db-dtypes", specifier = ">=1.7.2,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.46.1,<4" },
     { name = "obs-common", editable = "projects/obs_common" },
     { name = "pandas", specifier = ">=3,<4" },
@@ -536,7 +536,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "db-dtypes"
-version = "1.7.1"
+version = "1.7.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
@@ -544,9 +544,9 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7d/bc/b348b35245452af9a6c8a360ae3434f027b919349a786d1cb73ded0c234e/db_dtypes-1.7.1.tar.gz", hash = "sha256:75adf3bdf3174a6474ea4162d9a345ea0b3102ec4fd603e69ec26b6e8a99145a", size = 36036, upload-time = "2026-07-08T17:03:35.671Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a3/6f/c89f2a8981b01c2712868028f2a8a1e4c1d99a9154a19b493e393148da63/db_dtypes-1.7.2.tar.gz", hash = "sha256:0fb8794a29adb3d4e56c4347eecf9711ad35d847b6fb3d32e2c5a4de021f5afc", size = 36408, upload-time = "2026-10-01T18:14:06.137Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/5a/5601050daf8f21d201e7ff68cda559aac56b5be18632876daf7a711809b5/db_dtypes-1.7.1-py3-none-any.whl", hash = "sha256:450b94cd010cfa6d4d13cca2593009eba4fbe15516084c332cde1a47bbce0625", size = 17768, upload-time = "2026-07-08T17:03:03.252Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/51/3aec09b651917a0fe9bd968adb7888882064eddabb868cff8102e3f088c1/db_dtypes-1.7.2-py3-none-any.whl", hash = "sha256:3bf00b681afc270ae3b329b3f7e5b61fbea3f425226bb168ccfad2665ee8221b", size = 17764, upload-time = "2026-10-01T18:07:07.512Z" },
 ]
 
 [[package]]
@@ -616,7 +616,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "data-contracts", editable = "projects/data_contracts" },
-    { name = "db-dtypes", specifier = ">=1.7.1,<2" },
+    { name = "db-dtypes", specifier = ">=1.7.2,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.46.1,<4" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.41.0,<3" },
@@ -1843,7 +1843,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "data-contracts", editable = "projects/data_contracts" },
-    { name = "db-dtypes", specifier = ">=1.7.1,<2" },
+    { name = "db-dtypes", specifier = ">=1.7.2,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.46.1,<4" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.41.0,<3" },
@@ -2703,7 +2703,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "data-contracts", editable = "projects/data_contracts" },
-    { name = "db-dtypes", specifier = ">=1.7.1,<2" },
+    { name = "db-dtypes", specifier = ">=1.7.2,<2" },
     { name = "google-cloud-aiplatform", specifier = ">=1.50.0,<2" },
     { name = "google-cloud-bigquery", specifier = ">=3.46.1,<4" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.41.0,<3" },
