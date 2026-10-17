@@ -10,7 +10,7 @@ dependencies = [
     # data_generator.schema (the raw.activity_cdc row contract) and data_generator.config
     # (env-driven settings). Deliberately not ml-common: this job produces the platform's
     # source data and must not depend on anything that reads it.
-    "pydantic>=2,<3",
+    "pydantic>=2.14.1,<3",
     "pydantic-settings>=2.14.2,<3",
 ]
 
