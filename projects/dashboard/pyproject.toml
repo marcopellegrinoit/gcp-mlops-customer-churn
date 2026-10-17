@@ -23,7 +23,7 @@ dependencies = [
     # it regardless, since the workspace resolves one pyarrow for every package.
     "pyarrow>=25.0.1,<26",
     "altair>=6.3.0,<7",
-    "pydantic>=2,<3",
+    "pydantic>=2.14.1,<3",
     "pydantic-settings>=2.14.2,<3",
 ]
 
